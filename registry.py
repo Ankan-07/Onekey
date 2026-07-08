@@ -97,7 +97,7 @@ MODEL_TIERS: Dict[str, List[str]] = {
     ],
     "high": [
         "gemini-2.5-pro",
-        "deepseek/deepseek-r1",
+        "deepseek/deepseek-v4-pro",
         "groq/llama-3.3-70b-versatile",
         "nim/nvidia/llama-3.1-nemotron-70b-instruct",
         "openrouter/nvidia/nemotron-3-ultra:free",
