@@ -35,3 +35,6 @@ __pycache__/
 
 BUILD_PLAN.md 
 REFERENCE.md 
+agent.md
+/.claude
+/.cursor
