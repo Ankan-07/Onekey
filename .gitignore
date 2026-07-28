@@ -35,3 +35,9 @@ __pycache__/
 
 BUILD_PLAN.md 
 REFERENCE.md 
+DECISIONS.md
+AGENTS.md
+/.claude
+/.cursor
+/.agents
+/.pytest_cache

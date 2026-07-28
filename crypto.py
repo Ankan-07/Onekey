@@ -17,14 +17,14 @@ from cryptography.hazmat.primitives import hashes
 _NONCE_SIZE = 12
 _KEY_SIZE = 32
 
-_HDKF_INFO = b"onekey:provider-key-encryption:v1"
+_HKDF_INFO = b"onekey:provider-key-encryption:v1"
 
 def _master_secret() -> bytes:
     secret = os.environ.get("MASTER_SECRET")
     if not secret:
         raise RuntimeError(
             "MASTER_SECRET environment variable is not set. "
-            "Set it to a strong random string before starting the server "
+            "Set it to a strong random string before starting the server."
         )
     return secret.encode("utf-8")
 
@@ -33,7 +33,7 @@ def _derive_key() -> bytes:
         algorithm=hashes.SHA256(),
         length=_KEY_SIZE,
         salt=None,
-        info=_HDKF_INFO,
+        info=_HKDF_INFO,
     )
     return hkdf.derive(_master_secret())
 
@@ -58,7 +58,7 @@ def hash_token(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 def mask_token(token: str) -> str:
-    """A non reversible display form e.g. ``ak-abc…wxyz``."""
+    """A non-reversible display form, e.g. ``ok-abc…wxyz``."""
     if len(token) <= 12:
-        return token[:3] + "..."
-    return f"{token[:6]}...{token[-4:]}"
+        return token[:3] + "…"
+    return f"{token[:6]}…{token[-4:]}"
