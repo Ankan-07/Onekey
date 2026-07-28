@@ -62,7 +62,7 @@ class ProviderKey(Base):
 
     __table_args__ = (UniqueConstraint(
         "user_id", "provider", "key_label", name="uq_user_provider_label"
-    ))
+    ),)
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     user_id: Mapped[str] = mapped_column(

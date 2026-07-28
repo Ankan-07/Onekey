@@ -11,7 +11,15 @@ dependencies = [
     "psycopg2-binary==2.9.9",
     "pydantic==2.7.4",
     "pyjwt==2.8.0",
+    "pytest>=9.1.1",
     "python-dotenv==1.0.1",
     "sqlalchemy==2.0.30",
     "uvicorn[standard]==0.30.1",
 ]
+
+[tool.pytest.ini_options]
+# asyncio_mode = "auto" tells pytest-asyncio to automatically treat
+# any async test function as an asyncio test — no need to mark each one manually.
+# Without this, async tests are silently collected but never run.
+asyncio_mode = "auto"
+testpaths = ["tests"]
