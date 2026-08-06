@@ -1,0 +1,496 @@
+/*
+ * globals.css — Onekey Dashboard global design system.
+ * All tokens sourced exclusively from DESIGN.md.
+ * This file must NEVER use colors, fonts, or radius values not defined in DESIGN.md.
+ */
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* --------------------------------------------------------------------------
+   DESIGN TOKENS — mapped from DESIGN.md frontmatter to CSS custom properties.
+   All hex values are exact copies; do not approximate or modify.
+   -------------------------------------------------------------------------- */
+
+@layer base {
+  :root {
+    /* --- Brand / Accent --- */
+    --color-primary:          #cc785c;
+    --color-primary-active:   #a9583e;
+    --color-primary-disabled: #e6dfd8;
+    --color-accent-teal:      #5db8a6;
+    --color-accent-amber:     #e8a55a;
+
+    /* --- Surfaces (cream light) --- */
+    --color-canvas:               #faf9f5;
+    --color-surface-soft:         #f5f0e8;
+    --color-surface-card:         #efe9de;
+    --color-surface-cream-strong: #e8e0d2;
+
+    /* --- Surfaces (dark navy product) --- */
+    --color-surface-dark:          #181715;
+    --color-surface-dark-elevated: #252320;
+    --color-surface-dark-soft:     #1f1e1b;
+
+    /* --- Text --- */
+    --color-ink:          #141413;
+    --color-body-strong:  #252523;
+    --color-body:         #3d3d3a;
+    --color-muted:        #6c6a64;
+    --color-muted-soft:   #8e8b82;
+    --color-on-primary:   #ffffff;
+    --color-on-dark:      #faf9f5;
+    --color-on-dark-soft: #a09d96;
+
+    /* --- Borders --- */
+    --color-hairline:      #e6dfd8;
+    --color-hairline-soft: #ebe6df;
+
+    /* --- Semantic --- */
+    --color-success: #5db872;
+    --color-warning: #d4a017;
+    --color-error:   #c64545;
+
+    /* --- Border Radius (DESIGN.md §Shapes) --- */
+    --radius-xs:   4px;
+    --radius-sm:   6px;
+    --radius-md:   8px;
+    --radius-lg:   12px;
+    --radius-xl:   16px;
+    --radius-pill: 9999px;
+
+    /* --- Spacing (DESIGN.md §Spacing, 4px base) --- */
+    --space-xxs:     4px;
+    --space-xs:      8px;
+    --space-sm:      12px;
+    --space-md:      16px;
+    --space-lg:      24px;
+    --space-xl:      32px;
+    --space-xxl:     48px;
+    --space-section: 96px;
+
+    /* --- Focus ring --- */
+    --ring-color: rgba(204, 120, 92, 0.35); /* primary at 35% alpha */
+  }
+}
+
+/* --------------------------------------------------------------------------
+   BASE RESETS & TYPE FOUNDATION
+   -------------------------------------------------------------------------- */
+
+@layer base {
+  html {
+    /* Product dashboard shell: dark navy — matches DESIGN.md "dark navy product surfaces".
+       Cream canvas (--color-canvas) is still used for card/modal surfaces on top of this. */
+    background-color: var(--color-surface-dark);
+    color: var(--color-on-dark);
+    font-size: 16px; /* base for rem — DESIGN.md body-md is 16px */
+    scroll-behavior: smooth;
+    overflow-x: clip;
+    overscroll-behavior: none;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  body {
+    background-color: var(--color-surface-dark);
+    color: var(--color-on-dark);
+    /* StyreneB → Inter humanist sans. Per DESIGN.md: never Helvetica/Arial. */
+    font-family: "StyreneB", "Inter", -apple-system, BlinkMacSystemFont,
+      "Segoe UI", Roboto, sans-serif;
+    font-size: 16px;
+    line-height: 1.55;
+    font-weight: 400;
+    letter-spacing: 0;
+    overflow-x: clip;
+    overscroll-behavior: none;
+  }
+
+  /* Display headings: Copernicus slab-serif, weight 400, negative tracking.
+     Per DESIGN.md: "Negative letter-spacing on display sizes is non-negotiable." */
+  h1, h2 {
+    font-family: "Copernicus", "Tiempos Headline", "Cormorant Garamond",
+      "EB Garamond", "Garamond", "Times New Roman", serif;
+    font-weight: 400; /* Never bold. DESIGN.md: "Copernicus at 700 reads as bombastic." */
+    letter-spacing: -1px;
+    line-height: 1.1;
+  }
+
+  /* Sub-section display: slightly tighter negative tracking */
+  h3 {
+    font-family: "Copernicus", "Tiempos Headline", "Cormorant Garamond",
+      "EB Garamond", serif;
+    font-weight: 400;
+    font-size: 36px;
+    line-height: 1.15;
+    letter-spacing: -0.5px;
+  }
+
+  /* UI headings: StyreneB sans at weight 500 */
+  h4, h5, h6 {
+    font-family: "StyreneB", "Inter", sans-serif;
+    font-weight: 500;
+    line-height: 1.4;
+    letter-spacing: 0;
+  }
+
+  /* Code blocks: JetBrains Mono always */
+  code, kbd, pre, samp {
+    font-family: "JetBrains Mono", ui-monospace, monospace;
+    font-size: 14px;
+    line-height: 1.6;
+    font-feature-settings: normal;
+    font-variant-ligatures: none;
+  }
+
+  /* Inline links use coral per DESIGN.md §text-link */
+  a {
+    color: var(--color-primary);
+    text-decoration: none;
+  }
+
+  /* Selection: inverted ink/canvas — editorial feel */
+  ::selection {
+    background: var(--color-ink);
+    color: var(--color-canvas);
+  }
+
+  /* Focus rings: coral-alpha instead of browser default blue */
+  :focus-visible {
+    outline: 2px solid var(--ring-color);
+    outline-offset: 2px;
+  }
+}
+
+/* --------------------------------------------------------------------------
+   COMPONENT CLASSES — derived from DESIGN.md §Components
+   -------------------------------------------------------------------------- */
+
+@layer components {
+
+  /* ---- BUTTONS (DESIGN.md §Buttons) ---- */
+
+  /* Primary: coral fill, white text, 8px radius, 40px height */
+  .btn-primary {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    background-color: var(--color-primary);
+    color: var(--color-on-primary);
+    font-family: "StyreneB", "Inter", sans-serif;
+    font-size: 14px;
+    font-weight: 500;
+    line-height: 1;
+    padding: 12px 20px;
+    height: 40px;
+    border-radius: var(--radius-md);
+    border: none;
+    cursor: pointer;
+    transition: background-color 120ms ease;
+  }
+  .btn-primary:hover,
+  .btn-primary:active {
+    /* DESIGN.md: "primary darkens on press; nothing else changes" */
+    background-color: var(--color-primary-active);
+  }
+  .btn-primary:disabled {
+    background-color: var(--color-primary-disabled);
+    color: var(--color-muted);
+    cursor: not-allowed;
+  }
+
+  /* Secondary: cream canvas, hairline border, ink text */
+  .btn-secondary {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    background-color: var(--color-canvas);
+    color: var(--color-ink);
+    font-family: "StyreneB", "Inter", sans-serif;
+    font-size: 14px;
+    font-weight: 500;
+    line-height: 1;
+    padding: 12px 20px;
+    height: 40px;
+    border-radius: var(--radius-md);
+    border: 1px solid var(--color-hairline);
+    cursor: pointer;
+    transition: background-color 120ms ease, border-color 120ms ease;
+  }
+  .btn-secondary:hover {
+    background-color: var(--color-surface-soft);
+    border-color: var(--color-hairline);
+  }
+
+  /* Secondary on dark surfaces (inside dark product cards) */
+  .btn-secondary-dark {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    background-color: var(--color-surface-dark-elevated);
+    color: var(--color-on-dark);
+    font-family: "StyreneB", "Inter", sans-serif;
+    font-size: 14px;
+    font-weight: 500;
+    padding: 12px 20px;
+    height: 40px;
+    border-radius: var(--radius-md);
+    border: none;
+    cursor: pointer;
+  }
+
+  /* Text/link button — no background */
+  .btn-text {
+    background: transparent;
+    color: var(--color-ink);
+    font-family: "StyreneB", "Inter", sans-serif;
+    font-size: 14px;
+    font-weight: 500;
+    border: none;
+    cursor: pointer;
+    padding: 0;
+  }
+
+  /* Icon button — circular 36px */
+  .btn-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    background-color: var(--color-canvas);
+    color: var(--color-ink);
+    border: 1px solid var(--color-hairline);
+    border-radius: var(--radius-pill);
+    width: 36px;
+    height: 36px;
+    cursor: pointer;
+  }
+
+  /* ---- CARDS / SURFACES (DESIGN.md §Cards & Containers) ---- */
+
+  /* Feature card: cream card, 12px radius, 32px padding */
+  .feature-card {
+    background-color: var(--color-surface-card);
+    border-radius: var(--radius-lg);
+    padding: var(--space-xl);
+    /* Elevation: color-block only, no shadow per DESIGN.md */
+  }
+
+  /* Dark product/mockup card (code editor, model showcase) */
+  .product-card-dark {
+    background-color: var(--color-surface-dark);
+    color: var(--color-on-dark);
+    border-radius: var(--radius-lg);
+    padding: var(--space-xl);
+  }
+
+  /* Code window card: dark surface, soft inner code bg */
+  .code-window-card {
+    background-color: var(--color-surface-dark);
+    color: var(--color-on-dark);
+    border-radius: var(--radius-lg);
+    padding: var(--space-lg);
+    overflow: hidden;
+  }
+  .code-window-card pre {
+    background-color: var(--color-surface-dark-soft);
+    border-radius: var(--radius-sm);
+    padding: var(--space-md);
+    overflow-x: auto;
+  }
+
+  /* Model comparison card: canvas bg, hairline border */
+  .model-card {
+    background-color: var(--color-canvas);
+    border: 1px solid var(--color-hairline);
+    border-radius: var(--radius-lg);
+    padding: var(--space-xl);
+  }
+
+  /* Pricing tier card: standard (canvas) */
+  .pricing-card {
+    background-color: var(--color-canvas);
+    border: 1px solid var(--color-hairline);
+    border-radius: var(--radius-lg);
+    padding: var(--space-xl);
+  }
+
+  /* Pricing tier card: featured — dark surface IS the signal */
+  .pricing-card-featured {
+    background-color: var(--color-surface-dark);
+    color: var(--color-on-dark);
+    border-radius: var(--radius-lg);
+    padding: var(--space-xl);
+  }
+
+  /* Coral callout card: full-bleed coral, white text */
+  .callout-coral {
+    background-color: var(--color-primary);
+    color: var(--color-on-primary);
+    border-radius: var(--radius-lg);
+    padding: var(--space-xxl);
+  }
+
+  /* Connector tile: canvas bg, hairline border, 20px padding */
+  .connector-tile {
+    background-color: var(--color-canvas);
+    border: 1px solid var(--color-hairline);
+    border-radius: var(--radius-lg);
+    padding: 20px;
+  }
+
+  /* ---- INPUTS (DESIGN.md §Inputs) ---- */
+
+  .text-input {
+    background-color: var(--color-canvas);
+    color: var(--color-ink);
+    font-family: "StyreneB", "Inter", sans-serif;
+    font-size: 16px;
+    font-weight: 400;
+    line-height: 1.55;
+    padding: 10px 14px;
+    height: 40px;
+    border: 1px solid var(--color-hairline);
+    border-radius: var(--radius-md);
+    outline: none;
+    transition: border-color 120ms ease, box-shadow 120ms ease;
+    width: 100%;
+  }
+  /* Focus: coral ring per DESIGN.md §text-input-focused */
+  .text-input:focus {
+    border-color: var(--color-primary);
+    box-shadow: 0 0 0 3px rgba(204, 120, 92, 0.15);
+  }
+
+  /* ---- BADGES (DESIGN.md §Tags) ---- */
+
+  /* Neutral badge: cream card bg */
+  .badge {
+    display: inline-flex;
+    align-items: center;
+    background-color: var(--color-surface-card);
+    color: var(--color-ink);
+    font-family: "StyreneB", "Inter", sans-serif;
+    font-size: 13px;
+    font-weight: 500;
+    border-radius: var(--radius-pill);
+    padding: 4px 12px;
+  }
+
+  /* Coral badge: "NEW", "BETA", featured highlights */
+  .badge-coral {
+    display: inline-flex;
+    align-items: center;
+    background-color: var(--color-primary);
+    color: var(--color-on-primary);
+    font-family: "StyreneB", "Inter", sans-serif;
+    font-size: 12px;
+    font-weight: 500;
+    letter-spacing: 1.5px;
+    text-transform: uppercase;
+    border-radius: var(--radius-pill);
+    padding: 4px 12px;
+  }
+
+  /* ---- TABS (DESIGN.md §Tab / Filter) ---- */
+
+  .tab {
+    background: transparent;
+    color: var(--color-muted);
+    font-family: "StyreneB", "Inter", sans-serif;
+    font-size: 14px;
+    font-weight: 500;
+    padding: 8px 14px;
+    border-radius: var(--radius-md);
+    border: none;
+    cursor: pointer;
+    transition: background-color 120ms ease, color 120ms ease;
+  }
+  .tab-active,
+  .tab:hover {
+    background-color: var(--color-surface-card);
+    color: var(--color-ink);
+  }
+
+  /* ---- TYPOGRAPHY HELPERS ---- */
+
+  /* Hero display — largest headline, serif, negative tracking */
+  .display-xl {
+    font-family: "Copernicus", "Tiempos Headline", "Cormorant Garamond", serif;
+    font-size: 64px;
+    font-weight: 400;
+    line-height: 1.05;
+    letter-spacing: -1.5px;
+  }
+
+  /* Meta/caption label in small caps style */
+  .meta-caps {
+    font-family: "StyreneB", "Inter", sans-serif;
+    font-size: 12px;
+    font-weight: 500;
+    letter-spacing: 1.5px;
+    text-transform: uppercase;
+    color: var(--color-muted);
+  }
+}
+
+/* --------------------------------------------------------------------------
+   UTILITIES
+   -------------------------------------------------------------------------- */
+
+@layer utilities {
+
+  /* Scrollbar: thin, hairline-colored per brand palette */
+  .scrollbar-thin::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  .scrollbar-thin::-webkit-scrollbar-thumb {
+    background-color: var(--color-hairline);
+    border-radius: 9999px;
+  }
+  .scrollbar-thin::-webkit-scrollbar-thumb:hover {
+    background-color: var(--color-hairline-soft);
+  }
+  .scrollbar-thin::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  /* Hover-elevated state: the single allowed shadow per DESIGN.md §Elevation */
+  .hover-elevate:hover {
+    box-shadow: 0 1px 3px rgba(20, 20, 19, 0.08);
+  }
+
+  /* Reveal animation for scroll-in sections */
+  .reveal {
+    opacity: 0;
+    transform: translateY(24px);
+    transition:
+      opacity 500ms cubic-bezier(0.16, 1, 0.3, 1),
+      transform 500ms cubic-bezier(0.16, 1, 0.3, 1);
+  }
+  .reveal.is-visible {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* --------------------------------------------------------------------------
+   RECHARTS: suppress default focus outline on SVG surfaces
+   -------------------------------------------------------------------------- */
+
+.recharts-surface:focus {
+  outline: none;
+}
+
+/* --------------------------------------------------------------------------
+   VIEW TRANSITIONS API — 360ms crossfade for route changes
+   -------------------------------------------------------------------------- */
+
+@media (prefers-reduced-motion: no-preference) {
+  ::view-transition-old(root),
+  ::view-transition-new(root) {
+    animation-duration: 360ms;
+    animation-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+  }
+}
