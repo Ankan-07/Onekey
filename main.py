@@ -4,25 +4,39 @@
 
 import env_loader  # MUST be first import to ensure environment variables are loaded before model/crypto initialization
 
+import base64
 from contextlib import asynccontextmanager
 import datetime
 import os
 import secrets
-from typing import Generator, Optional
+import time
+from typing import Any, AsyncIterator, Callable, Dict, Generator, List, Literal, Optional, Tuple
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Path, Request, status
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 import jwt
 from pydantic import BaseModel, Field
 from starlette.exceptions import HTTPException as StarletteHTTPException
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from crypto import encrypt, hash_token, mask_token
-from models import OneKey, ProviderKey, SessionLocal, User, init_db
-from registry import SUPPORTED_PROVIDERS
+import anthropic_adapter
+from crypto import decrypt, encrypt, hash_token, mask_token
+from models import OneKey, ProviderHealth, ProviderKey, RequestLog, SessionLocal, User, UserModel, UserPreference, init_db
+from registry import MODEL_TIERS, SUPPORTED_PROVIDERS, build_effective_table, effective_cascade, models_by_tier, parse_model
+import responses_adapter
+from router import (
+    COOLDOWN_SECONDS,
+    AllProvidersFailed,
+    NoModelsAvailable,
+    iter_stream,
+    open_stream,
+    route_chat_completion,
+)
+
 
 
 @asynccontextmanager
@@ -298,6 +312,169 @@ class UpdateOnekeyKeyRequest(BaseModel):
     rate_limit_per_minute: Optional[int] = Field(None, ge=1)
     clear_rate_limit: bool = False
     revoked: Optional[bool] = None
+
+
+class ChatMessage(BaseModel):
+    role: str
+    content: str
+
+
+class ChatCompletionRequest(BaseModel):
+    messages: List[ChatMessage] = []
+    effort: Literal["low", "medium", "high"] = "medium"
+    model: Optional[str] = None
+    temperature: Optional[float] = None
+    max_tokens: Optional[int] = None
+    top_p: Optional[float] = None
+    stream: Optional[bool] = False
+
+    model_config = {"extra": "allow"}
+
+
+# --- Inference Helpers ---
+
+def _resolve_effort(body: ChatCompletionRequest) -> str:
+    """Extract effort level from request body.
+
+    If the requested model starts with 'onekey-' (case-insensitive) and specifies a valid tier
+    (e.g., 'onekey-low'), that tier is used; otherwise the explicit effort field is used.
+    """
+    model = (body.model or "").lower()
+    if model.startswith("onekey-"):
+        tier = model.split("-", 1)[1]
+        if tier in ("low", "medium", "high"):
+            return tier
+    return body.effort
+
+
+def _no_models_error(exc: Exception) -> JSONResponse:
+    """Format HTTP 409 error envelope when no enabled model matches user's configured keys/preferences."""
+    return _openai_error(
+        409,
+        str(exc),
+        err_type="invalid_request_error",
+        code="no_models_available",
+    )
+
+
+def _all_failed_error(exc: AllProvidersFailed) -> JSONResponse:
+    """Format HTTP 502 error envelope when all candidate upstream models in the cascade failed."""
+    return _openai_error(
+        502,
+        "All candidate models were exhausted; see 'failed_attempts' for the per-model reason.",
+        err_type="api_error",
+        code="all_providers_failed",
+        extra={"failed_attempts": [a.as_dict() for a in exc.attempts]},
+    )
+
+
+def _load_provider_keys(db: Session, user_id: str) -> Dict[str, List[Tuple[str, str]]]:
+    """Load all configured provider keys for a user grouped by provider name."""
+    keys = (
+        db.query(ProviderKey)
+        .filter(ProviderKey.user_id == user_id)
+        .order_by(ProviderKey.id)
+        .all()
+    )
+    result: Dict[str, List[Tuple[str, str]]] = {}
+    for pk in keys:
+        result.setdefault(pk.provider, []).append((pk.key_label, pk.encrypted_key))
+    return result
+
+
+def _key_requests_last_minute(db: Session, key_id: int) -> int:
+    """Count request log entries for a given OneKey in the last 60 seconds (for rate limiting)."""
+    cutoff = _utcnow() - datetime.timedelta(seconds=60)
+    return (
+        db.query(func.count(RequestLog.id))
+        .filter(
+            RequestLog.onekey_key_id == key_id,
+            RequestLog.timestamp >= cutoff,
+        )
+        .scalar()
+        or 0
+    )
+
+
+def _cooling_down_providers(db: Session, user_id: str) -> set[str]:
+    """Identify providers currently in rate-limit cooldown (429 within the last COOLDOWN_SECONDS)."""
+    cutoff = _utcnow() - datetime.timedelta(seconds=COOLDOWN_SECONDS)
+    health_rows = (
+        db.query(ProviderHealth)
+        .filter(ProviderHealth.user_id == user_id, ProviderHealth.last_429_at >= cutoff)
+        .all()
+    )
+    return {h.provider for h in health_rows}
+
+
+def _update_provider_health(db: Session, user_id: str, attempts: List[Any]) -> None:
+    """Record status outcome (success / failure / 429) for each provider attempt."""
+    now = _utcnow()
+    for attempt in attempts:
+        try:
+            health = (
+                db.query(ProviderHealth)
+                .filter(
+                    ProviderHealth.user_id == user_id,
+                    ProviderHealth.provider == attempt.provider,
+                )
+                .first()
+            )
+            if not health:
+                health = ProviderHealth(user_id=user_id, provider=attempt.provider)
+                db.add(health)
+
+            if attempt.status is not None and attempt.status < 400:
+                health.last_success_at = now
+            else:
+                health.last_failure_at = now
+                if attempt.status == 429:
+                    health.last_429_at = now
+
+            db.commit()
+        except Exception:
+            db.rollback()
+
+
+def _log_request(
+    db: Session,
+    user_id: str,
+    effort: str,
+    attempts: List[Any],
+    result: Any,
+    started: float,
+    status_code: int,
+    onekey_key_id: Optional[int] = None,
+) -> None:
+    """Insert a completed RequestLog entry for usage analytics (best-effort)."""
+    latency_ms = int((time.perf_counter() - started) * 1000)
+    attempts_dicts = [a.as_dict() for a in attempts]
+
+    succeeded_model = getattr(result, "model_entry", None)
+    provider = getattr(result, "provider", None)
+    usage = getattr(result, "usage", {}) or {}
+
+    status_str = "success" if status_code < 400 else "error"
+
+    log_entry = RequestLog(
+        user_id=user_id,
+        effort=effort,
+        models_attempted=attempts_dicts,
+        succeed_models=succeeded_model,
+        provider=provider,
+        prompt_tokens=usage.get("prompt_tokens"),
+        completion_tokens=usage.get("completion_tokens"),
+        total_tokens=usage.get("total_tokens"),
+        latency_ms=latency_ms,
+        status=status_str,
+        status_code=status_code,
+        onekey_key_id=onekey_key_id,
+    )
+    try:
+        db.add(log_entry)
+        db.commit()
+    except Exception:
+        db.rollback()
 
 
 # --- Management Helpers ---
@@ -598,8 +775,451 @@ def health_check():
     return {"status": "ok", "database": "ok", "version": "1.0.0"}
 
 
+# --- Streaming Helpers ---
+
+def _log_stream(
+    db: Session,
+    user_id: str,
+    effort: str,
+    handle: Any,
+    started: float,
+    onekey_key_id: Optional[int] = None,
+) -> Optional[int]:
+    """Insert an initial success RequestLog entry immediately when a stream starts.
+
+    Returns the log entry ID so it can be updated with final usage tokens when the stream completes.
+    """
+    attempts_dicts = [a.as_dict() for a in handle.attempts]
+    log_entry = RequestLog(
+        user_id=user_id,
+        effort=effort,
+        models_attempted=attempts_dicts,
+        succeed_models=handle.model_entry,
+        provider=handle.provider,
+        latency_ms=int((time.perf_counter() - started) * 1000),
+        status="success",
+        status_code=200,
+        onekey_key_id=onekey_key_id,
+    )
+    try:
+        db.add(log_entry)
+        db.commit()
+        db.refresh(log_entry)
+        return log_entry.id
+    except Exception:
+        db.rollback()
+        return None
+
+
+def _update_stream_log(log_id: Optional[int], usage: Dict[str, Any], started: float) -> None:
+    """Update initial stream RequestLog entry with final usage tokens and total latency."""
+    if not log_id:
+        return
+    db = SessionLocal()
+    try:
+        entry = db.query(RequestLog).filter(RequestLog.id == log_id).first()
+        if entry:
+            entry.latency_ms = int((time.perf_counter() - started) * 1000)
+            if usage:
+                entry.prompt_tokens = usage.get("prompt_tokens")
+                entry.completion_tokens = usage.get("completion_tokens")
+                entry.total_tokens = usage.get(
+                    "total_tokens",
+                    (entry.prompt_tokens or 0) + (entry.completion_tokens or 0),
+                )
+            db.commit()
+    except Exception:
+        db.rollback()
+    finally:
+        db.close()
+
+
+async def _stream_with_usage_log(
+    handle: Any,
+    *,
+    tier: str = "",
+    log_id: Optional[int] = None,
+    started: float,
+) -> AsyncIterator[bytes]:
+    """Async generator wrapping iter_stream, collecting usage stats and updating RequestLog on completion."""
+    usage: Dict[str, Any] = {}
+    try:
+        async for chunk in iter_stream(handle, tier=tier, usage_out=usage):
+            yield chunk
+    finally:
+        _update_stream_log(log_id, usage, started)
+
+
+async def _stream_chat(
+    db: Session,
+    user: User,
+    key: OneKey,
+    effort: str,
+    forward_body: Dict[str, Any],
+    provider_keys: Dict[str, List[Tuple[str, str]]],
+    models: List[str],
+    deprioritized: set[str],
+    *,
+    stream_transform: Optional[Callable[[AsyncIterator[bytes]], AsyncIterator[bytes]]] = None,
+) -> Any:
+    """Initiate and return an SSE StreamingResponse for chat completions."""
+    started = time.perf_counter()
+    try:
+        handle = await open_stream(
+            models=models,
+            body=forward_body,
+            provider_keys=provider_keys,
+            deprioritized_providers=deprioritized,
+            rotation_id=user.id,
+        )
+    except NoModelsAvailable as exc:
+        _log_request(db, user.id, effort, [], None, started, 409, key.id)
+        return _no_models_error(exc)
+    except AllProvidersFailed as exc:
+        _update_provider_health(db, user.id, exc.attempts)
+        _log_request(db, user.id, effort, exc.attempts, None, started, 502, key.id)
+        return _all_failed_error(exc)
+
+    _update_provider_health(db, user.id, handle.attempts)
+    log_id = _log_stream(db, user.id, effort, handle, started, key.id)
+    byte_stream = _stream_with_usage_log(handle, tier=effort, log_id=log_id, started=started)
+
+    if stream_transform is not None:
+        byte_stream = stream_transform(byte_stream)
+
+    headers = {
+        "X-Onekey-Provider": handle.provider,
+        "X-Onekey-Model": handle.model_entry,
+        "X-Onekey-Key-Label": handle.key_label or "",
+        "Cache-Control": "no-cache",
+    }
+    return StreamingResponse(byte_stream, media_type="text/event-stream", headers=headers)
+
+
+def _load_overrides_customs(
+    db: Session, user_id: str
+) -> Tuple[Dict[Tuple[str, str], Dict[str, Any]], List[UserModel]]:
+    """Load per-user UserModel overrides and custom models."""
+    rows = db.query(UserModel).filter(UserModel.user_id == user_id).all()
+    overrides: Dict[Tuple[str, str], Dict[str, Any]] = {}
+    customs: List[UserModel] = []
+    for r in rows:
+        if r.is_custom:
+            customs.append(r)
+        else:
+            overrides[(r.model_entry, r.tier)] = {
+                "enabled": r.enabled,
+                "priority": r.priority,
+            }
+    return overrides, customs
+
+
+async def _execute_chat_completion(
+    db: Session,
+    user: User,
+    key: OneKey,
+    *,
+    forward_body: Dict[str, Any],
+    effort: str,
+    stream_transform: Optional[Callable[[AsyncIterator[bytes]], AsyncIterator[bytes]]] = None,
+) -> Any:
+    """Core execution pipeline for chat completion & responses endpoints."""
+    if key.rate_limit_per_minute:
+        used = _key_requests_last_minute(db, key.id)
+        if used >= key.rate_limit_per_minute:
+            return _openai_error(
+                429,
+                f"Rate limit reached for this Onekey key: {used} requests/min.",
+                err_type="rate_limit_error",
+                code="rate_limit_exceeded",
+            )
+
+    provider_keys = _load_provider_keys(db, user.id)
+    if not provider_keys:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"No provider keys configured for user '{user.id}'. Add at least one provider key first.",
+        )
+
+    overrides, customs = _load_overrides_customs(db, user.id)
+    eff_table = build_effective_table(overrides, customs)
+
+    pref = db.query(UserPreference).filter(UserPreference.user_id == user.id).first()
+    pref_providers = pref.preferred_providers if pref else []
+    excl_providers = set(pref.excluded_providers) if pref else set()
+    excl_models = set(pref.excluded_models) if pref else set()
+
+    models = effective_cascade(
+        eff_table,
+        effort,
+        excluded_models=excl_models,
+        excluded_providers=excl_providers,
+        preferred_providers=pref_providers,
+    )
+
+    deprioritized = _cooling_down_providers(db, user.id)
+    started = time.perf_counter()
+
+    if forward_body.get("stream"):
+        return await _stream_chat(
+            db,
+            user,
+            key,
+            effort,
+            forward_body,
+            provider_keys,
+            models,
+            deprioritized,
+            stream_transform=stream_transform,
+        )
+
+    try:
+        result = await route_chat_completion(
+            models=models,
+            body=forward_body,
+            provider_keys=provider_keys,
+            deprioritized_providers=deprioritized,
+            rotation_id=user.id,
+            effort=effort,
+        )
+    except NoModelsAvailable as exc:
+        _log_request(db, user.id, effort, [], None, started, 409, key.id)
+        return _no_models_error(exc)
+    except AllProvidersFailed as exc:
+        _update_provider_health(db, user.id, exc.attempts)
+        _log_request(db, user.id, effort, exc.attempts, None, started, 502, key.id)
+        return _all_failed_error(exc)
+
+    _update_provider_health(db, user.id, result.attempts)
+    _log_request(db, user.id, effort, result.attempts, result, started, 200, key.id)
+    return result.data
+
+
+# --- Basic Endpoints ---
+
+@app.get("/health")
+def health_check():
+    """Health check endpoint confirming API status and DB connection capabilities."""
+    return {"status": "ok", "database": "ok", "version": "1.0.0"}
+
+
+# --- Inference Endpoints ---
+
 @app.post("/v1/chat/completions")
-def chat_completions_stub(key: OneKey = Depends(require_key)):
-    """Stub endpoint for Module 7a to test auth validation prior to full router integration."""
-    return {"status": "ok"}
+async def create_chat_completion(
+    body: ChatCompletionRequest,
+    key: OneKey = Depends(require_key),
+    db: Session = Depends(get_db),
+):
+    """OpenAI-compatible Chat Completions endpoint."""
+    user = _load_user_or_404(db, key.user_id)
+    forward_body = body.model_dump(exclude_none=True)
+    effort = _resolve_effort(body)
+    return await _execute_chat_completion(
+        db, user, key, forward_body=forward_body, effort=effort
+    )
+
+
+@app.post("/v1/responses")
+async def create_response(
+    request: Request,
+    key: OneKey = Depends(require_key),
+    db: Session = Depends(get_db),
+):
+    """OpenAI Responses API endpoint (used by Codex CLI v0.136+)."""
+    try:
+        raw_body = await request.json()
+    except Exception:
+        return _openai_error(400, "Invalid JSON body.")
+
+    if not isinstance(raw_body, dict):
+        return _openai_error(400, "Request body must be a JSON object.")
+
+    user = _load_user_or_404(db, key.user_id)
+    forward_body = responses_adapter.responses_to_openai_body(raw_body)
+    effort = responses_adapter.resolve_responses_effort(raw_body)
+
+    stream_transform = None
+    if raw_body.get("stream"):
+        stream_transform = lambda s: responses_adapter.convert_openai_stream_to_responses(s, raw_body)
+
+    result = await _execute_chat_completion(
+        db,
+        user,
+        key,
+        forward_body=forward_body,
+        effort=effort,
+        stream_transform=stream_transform,
+    )
+
+    if isinstance(result, (JSONResponse, StreamingResponse)):
+        return result
+
+    return responses_adapter.openai_to_responses_response(result, raw_body)
+
+
+@app.post("/v1/messages")
+async def create_anthropic_message(
+    request: Request,
+    key: OneKey = Depends(require_key),
+    db: Session = Depends(get_db),
+):
+    """Anthropic Messages API endpoint (used by Claude Code)."""
+    try:
+        raw_body = await request.json()
+    except Exception:
+        return JSONResponse(
+            status_code=400,
+            content=anthropic_adapter.anthropic_error(400, "Invalid JSON body."),
+        )
+
+    if not isinstance(raw_body, dict):
+        return JSONResponse(
+            status_code=400,
+            content=anthropic_adapter.anthropic_error(400, "Request body must be a JSON object."),
+        )
+
+    user = _load_user_or_404(db, key.user_id)
+
+    # 1. Rate limit check
+    if key.rate_limit_per_minute:
+        used = _key_requests_last_minute(db, key.id)
+        if used >= key.rate_limit_per_minute:
+            return JSONResponse(
+                status_code=429,
+                content=anthropic_adapter.anthropic_error(
+                    429,
+                    f"Rate limit reached for this Onekey key: {used} requests/min.",
+                    error_type="rate_limit_error",
+                ),
+            )
+
+    # 2. Provider keys check
+    provider_keys = _load_provider_keys(db, user.id)
+    if not provider_keys:
+        return JSONResponse(
+            status_code=400,
+            content=anthropic_adapter.anthropic_error(
+                400,
+                f"No provider keys configured for user '{user.id}'. Add at least one via the dashboard.",
+                error_type="invalid_request_error",
+            ),
+        )
+
+    request_model = raw_body.get("model") or "claude-sonnet-4-6"
+    effort = anthropic_adapter.resolve_effort(raw_body)
+    forward_body = anthropic_adapter.anthropic_to_openai_body(raw_body)
+
+    overrides, customs = _load_overrides_customs(db, user.id)
+    eff_table = build_effective_table(overrides, customs)
+
+    pref = db.query(UserPreference).filter(UserPreference.user_id == user.id).first()
+    pref_providers = pref.preferred_providers if pref else []
+    excl_providers = set(pref.excluded_providers) if pref else set()
+    excl_models = set(pref.excluded_models) if pref else set()
+
+    models = effective_cascade(
+        eff_table,
+        effort,
+        excluded_models=excl_models,
+        excluded_providers=excl_providers,
+        preferred_providers=pref_providers,
+    )
+
+    deprioritized = _cooling_down_providers(db, user.id)
+    started = time.perf_counter()
+
+    # Streaming path
+    if raw_body.get("stream"):
+        try:
+            handle = await open_stream(
+                models=models,
+                body=forward_body,
+                provider_keys=provider_keys,
+                deprioritized_providers=deprioritized,
+                rotation_id=user.id,
+            )
+        except NoModelsAvailable as exc:
+            _log_request(db, user.id, effort, [], None, started, 409, key.id)
+            return JSONResponse(
+                status_code=409,
+                content=anthropic_adapter.anthropic_error(409, str(exc), error_type="invalid_request_error"),
+            )
+        except AllProvidersFailed as exc:
+            _update_provider_health(db, user.id, exc.attempts)
+            _log_request(db, user.id, effort, exc.attempts, None, started, 502, key.id)
+            return JSONResponse(
+                status_code=502,
+                content=anthropic_adapter.anthropic_error(502, "All candidate models were exhausted."),
+            )
+
+        _update_provider_health(db, user.id, handle.attempts)
+        log_id = _log_stream(db, user.id, effort, handle, started, key.id)
+
+        usage: Dict[str, Any] = {}
+        async def _iter_stream_bytes():
+            try:
+                async for chunk in anthropic_adapter.convert_openai_stream_to_anthropic(
+                    iter_stream(handle, usage_out=usage), request_model
+                ):
+                    yield chunk
+            finally:
+                _update_stream_log(log_id, usage, started)
+
+        headers = {
+            "X-Onekey-Provider": handle.provider,
+            "X-Onekey-Model": handle.model_entry,
+            "Cache-Control": "no-cache",
+        }
+        return StreamingResponse(_iter_stream_bytes(), media_type="text/event-stream", headers=headers)
+
+    # Non-streaming path
+    try:
+        result = await route_chat_completion(
+            models=models,
+            body=forward_body,
+            provider_keys=provider_keys,
+            deprioritized_providers=deprioritized,
+            rotation_id=user.id,
+            effort=effort,
+        )
+    except NoModelsAvailable as exc:
+        _log_request(db, user.id, effort, [], None, started, 409, key.id)
+        return JSONResponse(
+            status_code=409,
+            content=anthropic_adapter.anthropic_error(409, str(exc), error_type="invalid_request_error"),
+        )
+    except AllProvidersFailed as exc:
+        _update_provider_health(db, user.id, exc.attempts)
+        _log_request(db, user.id, effort, exc.attempts, None, started, 502, key.id)
+        return JSONResponse(
+            status_code=502,
+            content=anthropic_adapter.anthropic_error(502, "All candidate models were exhausted."),
+        )
+
+    _update_provider_health(db, user.id, result.attempts)
+    _log_request(db, user.id, effort, result.attempts, result, started, 200, key.id)
+
+    anthropic_resp = anthropic_adapter.openai_to_anthropic_message(result.data, model=request_model)
+    return anthropic_resp
+
+
+@app.post("/v1/messages/count_tokens")
+async def count_anthropic_tokens(
+    request: Request,
+    key: OneKey = Depends(require_key),
+):
+    """Estimate token count for an Anthropic Messages API request body."""
+    try:
+        raw_body = await request.json()
+    except Exception:
+        return JSONResponse(
+            status_code=400,
+            content=anthropic_adapter.anthropic_error(400, "Invalid JSON body."),
+        )
+
+    tokens = anthropic_adapter.estimate_input_tokens(raw_body)
+    return {"input_tokens": tokens}
+
+
 
