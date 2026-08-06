@@ -1,4 +1,4 @@
-﻿# tests/test_env_loader.py — unit tests for env_loader.py
+# tests/test_env_loader.py — unit tests for env_loader.py
 #
 # What this file does: verifies that load_project_env() correctly aliases
 # NEXT_PUBLIC_SUPABASE_URL -> SUPABASE_URL when SUPABASE_URL is absent.
@@ -20,7 +20,7 @@ class TestLoadProjectEnv:
         # Remove SUPABASE_URL if present so the fallback branch runs
         env_before = os.environ.pop("SUPABASE_URL", None)
         try:
-            with patch("dotenv.load_dotenv"):  # don't actually read .env files
+            with patch("env_loader.load_dotenv"):  # don't actually read .env files
                 with patch.dict(os.environ, env_patch, clear=False):
                     import env_loader
                     env_loader.load_project_env()
@@ -38,7 +38,7 @@ class TestLoadProjectEnv:
             "SUPABASE_URL": original,
             "NEXT_PUBLIC_SUPABASE_URL": "https://different.supabase.co",
         }
-        with patch("dotenv.load_dotenv"):
+        with patch("env_loader.load_dotenv"):
             with patch.dict(os.environ, env_patch, clear=False):
                 import env_loader
                 env_loader.load_project_env()
@@ -46,6 +46,6 @@ class TestLoadProjectEnv:
 
     def test_load_project_env_does_not_raise_without_env_files(self):
         """load_project_env should not raise even when .env / .env.local are absent."""
-        with patch("dotenv.load_dotenv"):
+        with patch("env_loader.load_dotenv"):
             import env_loader
             env_loader.load_project_env()   # should complete without error

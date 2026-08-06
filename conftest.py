@@ -20,3 +20,5 @@ os.environ.setdefault("MASTER_SECRET", "test-secret-for-unit-tests-only")
 # Use in-memory SQLite so tests never touch the real onekey.db
 # (router.py doesn't use the DB directly, but modules it imports might)
 os.environ.setdefault("DATABASE_URL", "sqlite:///:memory:")
+os.environ.setdefault("SUPABASE_JWT_SECRET", "test-jwt-secret-for-unit-tests")
+

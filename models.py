@@ -30,11 +30,22 @@ def _resolve_db_url():
         )
     return make_url(env)
 
+from sqlalchemy.pool import StaticPool
+
 _DB_URL = _resolve_db_url()
 DATABASE_URL = _DB_URL.render_as_string(hide_password=False)
 
-engine = create_engine(_DB_URL)
+if _DB_URL.drivername.startswith("sqlite"):
+    engine = create_engine(
+        _DB_URL,
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+else:
+    engine = create_engine(_DB_URL)
+
 SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
+
 sessionlocal = SessionLocal
 
 class Base(DeclarativeBase):
