@@ -34,8 +34,9 @@ __pycache__/
 *.db
 
 BUILD_PLAN.md 
-REFERENCE.md 
+REFERENCE.md
 DECISIONS.md
+DESIGN.md
 AGENTS.md
 /.claude
 /.cursor

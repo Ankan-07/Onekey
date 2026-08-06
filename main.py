@@ -26,7 +26,7 @@ from sqlalchemy.orm import Session
 import anthropic_adapter
 from crypto import decrypt, encrypt, hash_token, mask_token
 from models import OneKey, ProviderHealth, ProviderKey, RequestLog, SessionLocal, User, UserModel, UserPreference, init_db
-from registry import MODEL_TIERS, SUPPORTED_PROVIDERS, build_effective_table, effective_cascade, models_by_tier, parse_model
+from registry import MODEL_TIERS, SUPPORTED_PROVIDERS, build_effective_table, effective_cascade, models_by_tier, parse_model, provider_catalog
 import responses_adapter
 from router import (
     COOLDOWN_SECONDS,
@@ -85,6 +85,28 @@ def get_db() -> Generator[Session, None, None]:
         yield db
     finally:
         db.close()
+
+
+def _encode_model_id(tier: str, model_entry: str) -> str:
+    """Encode (tier, model_entry) into an opaque URL-safe base64 string identifier."""
+    raw = f"{tier}|{model_entry}".encode("utf-8")
+    return base64.urlsafe_b64encode(raw).decode("utf-8").rstrip("=")
+
+
+def _decode_model_id(model_id: str) -> Tuple[str, str]:
+    """Decode an opaque URL-safe base64 model_id into (tier, model_entry)."""
+    try:
+        padded = model_id + "=" * (-len(model_id) % 4)
+        raw = base64.urlsafe_b64decode(padded.encode("utf-8")).decode("utf-8")
+        parts = raw.split("|", 1)
+        if len(parts) != 2:
+            raise ValueError("Invalid format")
+        return parts[0], parts[1]
+    except Exception:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid model_id format: '{model_id}'",
+        )
 
 
 # --- Error Envelope Formatting ---
@@ -312,6 +334,25 @@ class UpdateOnekeyKeyRequest(BaseModel):
     rate_limit_per_minute: Optional[int] = Field(None, ge=1)
     clear_rate_limit: bool = False
     revoked: Optional[bool] = None
+
+
+class UpdateUserModelRequest(BaseModel):
+    enabled: Optional[bool] = None
+    priority: Optional[int] = Field(None, ge=1)
+    tier: Optional[Literal["low", "medium", "high"]] = None
+
+
+class AddCustomModelRequest(BaseModel):
+    provider: str
+    model: str
+    tier: Literal["low", "medium", "high"] = "medium"
+    priority: int = Field(1, ge=1)
+
+
+class UpdatePreferencesRequest(BaseModel):
+    preferred_providers: Optional[List[str]] = None
+    excluded_providers: Optional[List[str]] = None
+    excluded_models: Optional[List[str]] = None
 
 
 class ChatMessage(BaseModel):
@@ -767,12 +808,522 @@ def delete_provider_key(
     return {"user_id": user_id, "deleted": deleted_info}
 
 
+# --- Model Override & Preference Endpoints ---
+
+@app.get("/users/{user_id}/models")
+def get_user_models(
+    user_id: str = Depends(require_jwt_user),
+    db: Session = Depends(get_db),
+):
+    """Retrieve the effective model cascade table for the user with all overrides and custom models."""
+    _load_user_or_404(db, user_id)
+    overrides, custom_rows = _load_overrides_customs(db, user_id)
+    custom_dicts = [
+        {
+            "id": c.id,
+            "model_entry": c.model_entry,
+            "tier": c.tier,
+            "enabled": c.enabled,
+            "priority": c.priority,
+        }
+        for c in custom_rows
+    ]
+    table = build_effective_table(overrides, custom_dicts)
+
+    result = {}
+    for tier, entries in table.items():
+        result[tier] = []
+        for item in entries:
+            item_copy = dict(item)
+            if item_copy.get("is_custom"):
+                match = next(
+                    (c for c in custom_rows if c.model_entry == item["model_entry"] and c.tier == tier),
+                    None,
+                )
+                item_copy["id"] = str(match.id) if match else item["model_entry"]
+                item_copy["model_id"] = str(match.id) if match else item["model_entry"]
+            else:
+                item_copy["model_id"] = _encode_model_id(tier, item["model_entry"])
+            result[tier].append(item_copy)
+
+    return {"user_id": user_id, "models": result}
+
+
+@app.put("/users/{user_id}/models/{model_id}")
+def update_user_model(
+    model_id: str,
+    body: UpdateUserModelRequest,
+    user_id: str = Depends(require_jwt_user),
+    db: Session = Depends(get_db),
+):
+    """Update enable state, priority, or tier override for a model entry."""
+    _load_user_or_404(db, user_id)
+
+    if model_id.isdigit():
+        custom_model = (
+            db.query(UserModel)
+            .filter(UserModel.id == int(model_id), UserModel.user_id == user_id, UserModel.is_custom == True)
+            .first()
+        )
+        if not custom_model:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Custom model not found")
+
+        if body.enabled is not None:
+            custom_model.enabled = body.enabled
+        if body.priority is not None:
+            custom_model.priority = body.priority
+        if body.tier is not None:
+            custom_model.tier = body.tier
+        db.commit()
+        return {"user_id": user_id, "model_id": model_id, "updated": True}
+
+    tier, model_entry = _decode_model_id(model_id)
+    override = (
+        db.query(UserModel)
+        .filter(
+            UserModel.user_id == user_id,
+            UserModel.model_entry == model_entry,
+            UserModel.tier == tier,
+            UserModel.is_custom == False,
+        )
+        .first()
+    )
+
+    if not override:
+        provider = parse_model(model_entry)[0]
+        override = UserModel(
+            user_id=user_id,
+            provider=provider,
+            model_entry=model_entry,
+            tier=tier,
+            enabled=body.enabled if body.enabled is not None else True,
+            priority=body.priority if body.priority is not None else 0,
+            is_custom=False,
+        )
+        db.add(override)
+    else:
+        if body.enabled is not None:
+            override.enabled = body.enabled
+        if body.priority is not None:
+            override.priority = body.priority
+        if body.tier is not None:
+            override.tier = body.tier
+
+    db.commit()
+    return {"user_id": user_id, "model_id": model_id, "updated": True}
+
+
+@app.post("/users/{user_id}/models")
+def add_custom_model(
+    body: AddCustomModelRequest,
+    user_id: str = Depends(require_jwt_user),
+    db: Session = Depends(get_db),
+):
+    """Add a user custom model to the cascade."""
+    _load_user_or_404(db, user_id)
+
+    if body.provider not in SUPPORTED_PROVIDERS:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Unsupported provider '{body.provider}'. Supported: {SUPPORTED_PROVIDERS}",
+        )
+
+    model_entry = body.model if body.model.startswith(f"{body.provider}/") else f"{body.provider}/{body.model}"
+
+    custom = UserModel(
+        user_id=user_id,
+        provider=body.provider,
+        model_entry=model_entry,
+        tier=body.tier,
+        priority=body.priority,
+        enabled=True,
+        is_custom=True,
+    )
+    db.add(custom)
+    db.commit()
+    db.refresh(custom)
+
+    return {
+        "user_id": user_id,
+        "model": {
+            "id": custom.id,
+            "model_id": str(custom.id),
+            "provider": custom.provider,
+            "model_entry": custom.model_entry,
+            "tier": custom.tier,
+            "priority": custom.priority,
+            "enabled": custom.enabled,
+            "is_custom": True,
+        },
+    }
+
+
+@app.delete("/users/{user_id}/models/{model_id}")
+def delete_user_model(
+    model_id: str,
+    user_id: str = Depends(require_jwt_user),
+    db: Session = Depends(get_db),
+):
+    """Delete a custom user model or remove a model override back to default."""
+    _load_user_or_404(db, user_id)
+
+    if model_id.isdigit():
+        custom = (
+            db.query(UserModel)
+            .filter(UserModel.id == int(model_id), UserModel.user_id == user_id, UserModel.is_custom == True)
+            .first()
+        )
+        if not custom:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Custom model not found")
+        db.delete(custom)
+        db.commit()
+        return {"user_id": user_id, "deleted_model_id": model_id}
+
+    tier, model_entry = _decode_model_id(model_id)
+    override = (
+        db.query(UserModel)
+        .filter(
+            UserModel.user_id == user_id,
+            UserModel.model_entry == model_entry,
+            UserModel.tier == tier,
+            UserModel.is_custom == False,
+        )
+        .first()
+    )
+    if override:
+        db.delete(override)
+        db.commit()
+
+    return {"user_id": user_id, "reset_model_id": model_id}
+
+
+@app.get("/users/{user_id}/preferences")
+def get_user_preferences(
+    user_id: str = Depends(require_jwt_user),
+    db: Session = Depends(get_db),
+):
+    """Get user routing preferences."""
+    _load_user_or_404(db, user_id)
+    pref = db.query(UserPreference).filter(UserPreference.user_id == user_id).first()
+    if not pref:
+        return {
+            "user_id": user_id,
+            "preferred_providers": [],
+            "excluded_providers": [],
+            "excluded_models": [],
+        }
+    return {
+        "user_id": user_id,
+        "preferred_providers": pref.preferred_providers or [],
+        "excluded_providers": pref.excluded_providers or [],
+        "excluded_models": pref.excluded_models or [],
+    }
+
+
+@app.put("/users/{user_id}/preferences")
+def update_user_preferences(
+    body: UpdatePreferencesRequest,
+    user_id: str = Depends(require_jwt_user),
+    db: Session = Depends(get_db),
+):
+    """Update user routing preferences."""
+    _load_user_or_404(db, user_id)
+    pref = db.query(UserPreference).filter(UserPreference.user_id == user_id).first()
+    if not pref:
+        pref = UserPreference(user_id=user_id)
+        db.add(pref)
+
+    if body.preferred_providers is not None:
+        pref.preferred_providers = body.preferred_providers
+    if body.excluded_providers is not None:
+        pref.excluded_providers = body.excluded_providers
+    if body.excluded_models is not None:
+        pref.excluded_models = body.excluded_models
+
+    db.commit()
+    return {
+        "user_id": user_id,
+        "preferred_providers": pref.preferred_providers or [],
+        "excluded_providers": pref.excluded_providers or [],
+        "excluded_models": pref.excluded_models or [],
+    }
+
+
+# --- Analytics & Discovery Helpers ---
+
+def _provider_request_counts(db: Session, user_id: str, window_seconds: int) -> Dict[str, int]:
+    """Count request attempts per provider in the given window by scanning RequestLog.models_attempted JSON."""
+    cutoff = _utcnow() - datetime.timedelta(seconds=window_seconds)
+    logs = (
+        db.query(RequestLog)
+        .filter(RequestLog.user_id == user_id, RequestLog.timestamp >= cutoff)
+        .all()
+    )
+    counts: Dict[str, int] = {}
+    for log in logs:
+        attempts = log.models_attempted or []
+        for att in attempts:
+            if isinstance(att, dict) and "provider" in att:
+                p = att["provider"]
+                counts[p] = counts.get(p, 0) + 1
+    return counts
+
+
+# --- Analytics Endpoints ---
+
+@app.get("/users/{user_id}/providers/health")
+def get_provider_health(
+    user_id: str = Depends(require_jwt_user),
+    db: Session = Depends(get_db),
+):
+    """Retrieve health and request metrics for all providers configured or recorded for the user."""
+    _load_user_or_404(db, user_id)
+
+    configured_keys = _load_provider_keys(db, user_id)
+    configured_providers = set(configured_keys.keys())
+
+    health_rows = db.query(ProviderHealth).filter(ProviderHealth.user_id == user_id).all()
+    health_by_provider = {h.provider: h for h in health_rows}
+
+    all_providers = sorted(list(configured_providers | set(health_by_provider.keys())))
+    req_min = _provider_request_counts(db, user_id, 60)
+    req_day = _provider_request_counts(db, user_id, 86400)
+    now = _utcnow()
+
+    providers_res = {}
+    for provider in all_providers:
+        health = health_by_provider.get(provider)
+        status_str = "untested"
+        cooldown_remaining = 0
+
+        if health:
+            if health.last_429_at:
+                last_429 = _as_aware(health.last_429_at)
+                elapsed = (now - last_429).total_seconds()
+                if elapsed < COOLDOWN_SECONDS:
+                    status_str = "cooling_down"
+                    cooldown_remaining = max(0, COOLDOWN_SECONDS - int(elapsed))
+                else:
+                    status_str = "active"
+            elif health.last_success_at or health.last_failure_at:
+                status_str = "active"
+
+        providers_res[provider] = {
+            "status": status_str,
+            "configured": provider in configured_providers,
+            "last_success": _as_aware(health.last_success_at).isoformat() if health and health.last_success_at else None,
+            "last_failure": _as_aware(health.last_failure_at).isoformat() if health and health.last_failure_at else None,
+            "last_429": _as_aware(health.last_429_at).isoformat() if health and health.last_429_at else None,
+            "cooldown_seconds_remaining": cooldown_remaining,
+            "requests_last_minute": req_min.get(provider, 0),
+            "requests_last_day": req_day.get(provider, 0),
+        }
+
+    return {
+        "user_id": user_id,
+        "cooldown_seconds": COOLDOWN_SECONDS,
+        "providers": providers_res,
+    }
+
+
+@app.get("/users/{user_id}/usage")
+def get_user_usage(
+    user_id: str = Depends(require_jwt_user),
+    db: Session = Depends(get_db),
+):
+    """Retrieve aggregate usage analytics for a user."""
+    _load_user_or_404(db, user_id)
+
+    total_requests = db.query(func.count(RequestLog.id)).filter(RequestLog.user_id == user_id).scalar() or 0
+
+    if total_requests == 0:
+        return {
+            "user_id": user_id,
+            "total_requests": 0,
+            "total_tokens": 0,
+            "success_rate": None,
+            "per_provider": {},
+            "per_model": {},
+            "requests_over_time": {},
+        }
+
+    total_tokens = db.query(func.sum(RequestLog.total_tokens)).filter(RequestLog.user_id == user_id).scalar() or 0
+    success_count = (
+        db.query(func.count(RequestLog.id))
+        .filter(RequestLog.user_id == user_id, RequestLog.status == "success")
+        .scalar()
+        or 0
+    )
+    success_rate = round(success_count / total_requests, 4)
+
+    prov_rows = (
+        db.query(RequestLog.provider, func.count(RequestLog.id))
+        .filter(RequestLog.user_id == user_id, RequestLog.provider.isnot(None))
+        .group_by(RequestLog.provider)
+        .all()
+    )
+    per_provider = {p: count for p, count in prov_rows if p}
+
+    model_rows = (
+        db.query(RequestLog.succeed_models, func.count(RequestLog.id))
+        .filter(RequestLog.user_id == user_id, RequestLog.succeed_models.isnot(None))
+        .group_by(RequestLog.succeed_models)
+        .all()
+    )
+    per_model = {m: count for m, count in model_rows if m}
+
+    date_rows = (
+        db.query(func.date(RequestLog.timestamp), func.count(RequestLog.id))
+        .filter(RequestLog.user_id == user_id)
+        .group_by(func.date(RequestLog.timestamp))
+        .order_by(func.date(RequestLog.timestamp))
+        .all()
+    )
+    requests_over_time = {str(d): count for d, count in date_rows if d}
+
+    return {
+        "user_id": user_id,
+        "total_requests": total_requests,
+        "total_tokens": total_tokens,
+        "success_rate": success_rate,
+        "per_provider": per_provider,
+        "per_model": per_model,
+        "requests_over_time": requests_over_time,
+    }
+
+
+@app.get("/users/{user_id}/usage/recent")
+def get_user_recent_usage(
+    limit: int = 20,
+    user_id: str = Depends(require_jwt_user),
+    db: Session = Depends(get_db),
+):
+    """Retrieve recent request logs for a user."""
+    _load_user_or_404(db, user_id)
+
+    if limit < 1 or limit > 500:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Limit parameter must be between 1 and 500.",
+        )
+
+    logs = (
+        db.query(RequestLog)
+        .filter(RequestLog.user_id == user_id)
+        .order_by(RequestLog.timestamp.desc(), RequestLog.id.desc())
+        .limit(limit)
+        .all()
+    )
+
+    log_list = [
+        {
+            "id": log.id,
+            "timestamp": _as_aware(log.timestamp).isoformat() if log.timestamp else None,
+            "effort": log.effort,
+            "models_attempted": log.models_attempted,
+            "succeeded_model": log.succeed_models,
+            "provider": log.provider,
+            "prompt_tokens": log.prompt_tokens,
+            "completion_tokens": log.completion_tokens,
+            "total_tokens": log.total_tokens,
+            "latency_ms": log.latency_ms,
+            "status": log.status,
+            "status_code": log.status_code,
+        }
+        for log in logs
+    ]
+
+    return {"user_id": user_id, "count": len(log_list), "logs": log_list}
+
+
+# --- Discovery Endpoints ---
+
+@app.get("/models")
+def list_models():
+    """Public global registry grouped by effort tier."""
+    return {"tiers": models_by_tier()}
+
+
+@app.get("/providers")
+def list_providers():
+    """Public provider metadata list sorted by provider name."""
+    cat = provider_catalog()
+    providers = [{"provider": name, **meta} for name, meta in sorted(cat.items())]
+    return {"providers": providers}
+
+
+@app.get("/v1/models")
+def list_v1_models(
+    key: OneKey = Depends(require_key),
+    db: Session = Depends(get_db),
+):
+    """OpenAI-compatible models catalog for client tools (e.g. Cursor, Cline)."""
+    now = int(time.time())
+    data = [
+        {"id": "onekey-low", "object": "model", "created": now, "owned_by": "onekey"},
+        {"id": "onekey-medium", "object": "model", "created": now, "owned_by": "onekey"},
+        {"id": "onekey-high", "object": "model", "created": now, "owned_by": "onekey"},
+        {"id": "claude-haiku-4-5", "object": "model", "created": now, "owned_by": "onekey"},
+        {"id": "claude-sonnet-4-6", "object": "model", "created": now, "owned_by": "onekey"},
+        {"id": "claude-opus-4-6", "object": "model", "created": now, "owned_by": "onekey"},
+    ]
+
+    user_id = key.user_id
+    configured_keys = _load_provider_keys(db, user_id)
+    configured_providers = set(configured_keys.keys())
+
+    if configured_providers:
+        overrides, custom_rows = _load_overrides_customs(db, user_id)
+        custom_dicts = [
+            {"model_entry": c.model_entry, "tier": c.tier, "enabled": c.enabled, "priority": c.priority}
+            for c in custom_rows
+        ]
+        eff_table = build_effective_table(overrides, custom_dicts)
+
+        pref = db.query(UserPreference).filter(UserPreference.user_id == user_id).first()
+        pref_providers = pref.preferred_providers if pref else []
+        excl_providers = set(pref.excluded_providers) if pref else set()
+        excl_models = set(pref.excluded_models) if pref else set()
+
+        added_entries = set()
+        for tier in ["high", "medium", "low"]:
+            tier_models = effective_cascade(
+                eff_table,
+                tier,
+                excluded_models=excl_models,
+                excluded_providers=excl_providers,
+                preferred_providers=pref_providers,
+            )
+            for entry in tier_models:
+                if entry not in added_entries:
+                    provider = parse_model(entry)[0]
+                    if provider in configured_providers:
+                        added_entries.add(entry)
+                        data.append(
+                            {
+                                "id": entry,
+                                "object": "model",
+                                "created": now,
+                                "owned_by": provider,
+                            }
+                        )
+
+    return {"object": "list", "data": data}
+
+
 # --- Basic Endpoints ---
 
 @app.get("/health")
-def health_check():
+def health_check(db: Session = Depends(get_db)):
     """Health check endpoint confirming API status and DB connection capabilities."""
-    return {"status": "ok", "database": "ok", "version": "1.0.0"}
+    try:
+        db.execute(select(1))
+        return {"status": "ok", "database": "ok", "version": app.version}
+    except Exception:
+        return JSONResponse(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            content={"status": "degraded", "database": "error", "version": app.version},
+        )
 
 
 # --- Streaming Helpers ---
