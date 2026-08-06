@@ -15,6 +15,8 @@ import { useRouter } from "next/navigation";
 
 import { useAuth } from "@/lib/auth";
 import { FullscreenLoader } from "@/components/Spinner";
+import { Topbar } from "@/components/Topbar";
+import { ApiConnectionBanner } from "@/components/ApiConnectionBanner";
 
 export default function DashboardLayout({
   children,
@@ -77,13 +79,14 @@ export default function DashboardLayout({
   }
 
   // Authenticated — render the dashboard shell.
-  // NOTE: <Topbar /> and <ApiConnectionBanner /> are added in Module 12.
   return (
-    <div className="min-h-screen bg-[#181715]">
-      {/* Topbar slot — Module 12 will replace this comment */}
+    <div className="min-h-screen bg-surface-dark font-sans text-on-dark">
+      <Topbar />
       <main className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 py-8">
+        <ApiConnectionBanner />
         {children}
       </main>
     </div>
   );
 }
+
