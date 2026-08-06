@@ -9,7 +9,7 @@
 import React, { useState, useEffect } from "react";
 import { useAuth } from "@/lib/auth";
 import { useApi, api } from "@/lib/api";
-import { PreferencesResponse, ListModelsResponse } from "@/lib/types";
+import { PreferencesResponse, ListModelsResponse, UserModel } from "@/lib/types";
 import { providerLabel } from "@/lib/utils";
 import { PageHeader } from "@/components/PageHeader";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -132,9 +132,16 @@ export default function PreferencesPage() {
   };
 
   // Filtered connectable models for exclusion search
+  const rawModels = modelsData?.models;
+  const modelsList: UserModel[] = Array.isArray(rawModels)
+    ? rawModels
+    : rawModels
+    ? (Object.values(rawModels).flat() as UserModel[])
+    : [];
+
   const availableModels = Array.from(
     new Set(
-      (modelsData?.models || [])
+      modelsList
         .filter((m) => m.provider_connected)
         .map((m) => m.model_entry)
     )
