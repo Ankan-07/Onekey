@@ -554,6 +554,7 @@ def init_user(sub: str = Depends(require_jwt), db: Session = Depends(get_db)):
         token_hash = hash_token(raw_token)
         user = User(id=sub, api_key=token_hash)
         db.add(user)
+        db.flush()
 
         primary_key = OneKey(
             user_id=sub,
