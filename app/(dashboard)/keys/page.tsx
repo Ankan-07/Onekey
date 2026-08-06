@@ -61,7 +61,7 @@ export default function KeysPage() {
 
   // SWR query
   const { data, mutate } = useApi<ListKeychainKeysResponse>(
-    ready && userId ? `/users/${userId}/keychain-keys` : null
+    ready && userId ? `/users/${userId}/onekey-keys` : null
   );
 
   useEffect(() => {
@@ -78,7 +78,7 @@ export default function KeysPage() {
     try {
       setCreating(true);
       const res = await api.post<CreatedKeychainKey>(
-        `/users/${userId}/keychain-keys`,
+        `/users/${userId}/onekey-keys`,
         { label: newLabel.trim() || "default" }
       );
       if (res.api_key) {
