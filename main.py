@@ -16,11 +16,13 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 import jwt
+from pydantic import BaseModel, Field
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from sqlalchemy.orm import Session
 
-from crypto import hash_token, mask_token
-from models import OneKey, SessionLocal, User, init_db
+from crypto import encrypt, hash_token, mask_token
+from models import OneKey, ProviderKey, SessionLocal, User, init_db
+from registry import SUPPORTED_PROVIDERS
 
 
 @asynccontextmanager
@@ -257,6 +259,337 @@ def require_jwt_user(
     return sub
 
 
+# --- Pydantic Schemas for Management APIs ---
+
+class StoreKeyRequest(BaseModel):
+    provider: str
+    api_key: str
+    key_label: str = "default"
+
+
+class StoreKeyResponse(BaseModel):
+    user_id: str
+    provider: str
+    key_label: str
+    key_id: int
+    status: str
+
+
+class ProviderKeyInfo(BaseModel):
+    id: int
+    provider: str
+    key_label: str
+    created_at: Optional[str]
+
+
+class ListKeysResponse(BaseModel):
+    user_id: str
+    providers: list[str]
+    keys: list[ProviderKeyInfo]
+
+
+class CreateOnekeyKeyRequest(BaseModel):
+    label: str = "default"
+    rate_limit_per_minute: Optional[int] = Field(None, ge=1)
+
+
+class UpdateOnekeyKeyRequest(BaseModel):
+    label: Optional[str] = None
+    rate_limit_per_minute: Optional[int] = Field(None, ge=1)
+    clear_rate_limit: bool = False
+    revoked: Optional[bool] = None
+
+
+# --- Management Helpers ---
+
+def _load_user_or_404(db: Session, user_id: str) -> User:
+    """Fetch user by ID or raise HTTP 404 Not Found."""
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+    return user
+
+
+def _onekey_key_public(k: OneKey) -> dict:
+    """Format OneKey DB row into public response dictionary."""
+    return {
+        "id": k.id,
+        "label": k.label,
+        "masked": k.masked,
+        "is_primary": k.is_primary,
+        "rate_limit_per_minute": k.rate_limit_per_minute,
+        "revoked": k.revoked,
+        "created_at": _as_aware(k.created_at).isoformat() if k.created_at else None,
+        "last_used_at": _as_aware(k.last_used_at).isoformat() if k.last_used_at else None,
+    }
+
+
+# --- Management Endpoints ---
+
+@app.post("/users/init")
+def init_user(sub: str = Depends(require_jwt), db: Session = Depends(get_db)):
+    """Initialize or fetch user profile keyed by JWT `sub` claim. Mint default primary API key if new."""
+    user = db.query(User).filter(User.id == sub).first()
+    is_new = False
+    if not user:
+        raw_token = _new_token()
+        token_hash = hash_token(raw_token)
+        user = User(id=sub, api_key=token_hash)
+        db.add(user)
+
+        primary_key = OneKey(
+            user_id=sub,
+            label="primary",
+            key_hash=token_hash,
+            masked=mask_token(raw_token),
+            is_primary=True,
+        )
+        db.add(primary_key)
+        db.commit()
+        is_new = True
+
+    return {"user_id": sub, "created": is_new}
+
+
+@app.post("/users/{user_id}/onekey-keys")
+def create_onekey_key(
+    body: CreateOnekeyKeyRequest = CreateOnekeyKeyRequest(),
+    user_id: str = Depends(require_jwt_user),
+    db: Session = Depends(get_db),
+):
+    """Mint a new ok- API key for the authenticated user."""
+    _load_user_or_404(db, user_id)
+    raw_token = _new_token()
+    token_hash = hash_token(raw_token)
+
+    key = OneKey(
+        user_id=user_id,
+        label=body.label,
+        key_hash=token_hash,
+        masked=mask_token(raw_token),
+        is_primary=False,
+        rate_limit_per_minute=body.rate_limit_per_minute,
+    )
+    db.add(key)
+    db.commit()
+    db.refresh(key)
+
+    res = {
+        "user_id": user_id,
+        "api_key": raw_token,
+        "warning": "Save this now — it is shown only once.",
+    }
+    res.update(_onekey_key_public(key))
+    return res
+
+
+@app.get("/users/{user_id}/onekey-keys")
+def list_onekey_keys(
+    user_id: str = Depends(require_jwt_user),
+    db: Session = Depends(get_db),
+):
+    """List all ok- API keys associated with the user."""
+    _load_user_or_404(db, user_id)
+    keys = db.query(OneKey).filter(OneKey.user_id == user_id).order_by(OneKey.id).all()
+    return {"user_id": user_id, "keys": [_onekey_key_public(k) for k in keys]}
+
+
+@app.post("/users/{user_id}/regenerate-key")
+def regenerate_primary_key(
+    user_id: str = Depends(require_jwt_user),
+    db: Session = Depends(get_db),
+):
+    """Regenerate the user's primary API key token, revoking the old primary token."""
+    user = _load_user_or_404(db, user_id)
+    primary_key = (
+        db.query(OneKey)
+        .filter(OneKey.user_id == user_id, OneKey.is_primary == True)
+        .first()
+    )
+
+    raw_token = _new_token()
+    token_hash = hash_token(raw_token)
+
+    if not primary_key:
+        primary_key = OneKey(
+            user_id=user_id,
+            label="primary",
+            key_hash=token_hash,
+            masked=mask_token(raw_token),
+            is_primary=True,
+        )
+        db.add(primary_key)
+    else:
+        primary_key.key_hash = token_hash
+        primary_key.masked = mask_token(raw_token)
+        primary_key.revoked = False
+        primary_key.last_used_at = None
+
+    user.api_key = token_hash
+    db.commit()
+    db.refresh(primary_key)
+
+    res = {
+        "user_id": user_id,
+        "api_key": raw_token,
+        "warning": "Save this now — it is shown only once. The old primary key no longer works.",
+    }
+    res.update(_onekey_key_public(primary_key))
+    return res
+
+
+@app.put("/onekey-keys/{key_id}")
+def update_onekey_key(
+    key_id: int,
+    body: UpdateOnekeyKeyRequest,
+    sub: str = Depends(require_jwt),
+    db: Session = Depends(get_db),
+):
+    """Update label, rate limits, or revoked state of an ok- key. Returns 404 if key does not exist or belong to sub."""
+    key = db.query(OneKey).filter(OneKey.id == key_id).first()
+    if not key or key.user_id != sub:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Onekey key not found")
+
+    if body.label is not None:
+        key.label = body.label
+    if body.clear_rate_limit:
+        key.rate_limit_per_minute = None
+    elif body.rate_limit_per_minute is not None:
+        key.rate_limit_per_minute = body.rate_limit_per_minute
+
+    if body.revoked is not None:
+        key.revoked = body.revoked
+
+    db.commit()
+    db.refresh(key)
+    res = {"user_id": sub}
+    res.update(_onekey_key_public(key))
+    return res
+
+
+@app.delete("/onekey-keys/{key_id}")
+def delete_onekey_key(
+    key_id: int,
+    sub: str = Depends(require_jwt),
+    db: Session = Depends(get_db),
+):
+    """Soft-revoke an ok- API key. Returns 404 if key does not exist or belong to sub."""
+    key = db.query(OneKey).filter(OneKey.id == key_id).first()
+    if not key or key.user_id != sub:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Onekey key not found")
+
+    key.revoked = True
+    db.commit()
+    db.refresh(key)
+    res = {"revoked": True}
+    res.update(_onekey_key_public(key))
+    return res
+
+
+@app.post("/users/{user_id}/keys", response_model=StoreKeyResponse)
+def store_provider_key(
+    body: StoreKeyRequest,
+    user_id: str = Depends(require_jwt_user),
+    db: Session = Depends(get_db),
+):
+    """Store an encrypted provider API key (e.g., Anthropic, Groq, Gemini) for the user."""
+    _load_user_or_404(db, user_id)
+    if body.provider not in SUPPORTED_PROVIDERS:
+        supported = ", ".join(sorted(SUPPORTED_PROVIDERS))
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Unsupported provider '{body.provider}'. Supported providers are: {supported}",
+        )
+
+    enc_key = encrypt(body.api_key)
+    existing = (
+        db.query(ProviderKey)
+        .filter(
+            ProviderKey.user_id == user_id,
+            ProviderKey.provider == body.provider,
+            ProviderKey.key_label == body.key_label,
+        )
+        .first()
+    )
+
+    if existing:
+        existing.encrypted_key = enc_key
+        existing.updated_at = _utcnow()
+        status_str = "updated"
+        key_row = existing
+    else:
+        key_row = ProviderKey(
+            user_id=user_id,
+            provider=body.provider,
+            key_label=body.key_label,
+            encrypted_key=enc_key,
+        )
+        db.add(key_row)
+        status_str = "created"
+
+    db.commit()
+    db.refresh(key_row)
+
+    return StoreKeyResponse(
+        user_id=user_id,
+        provider=body.provider,
+        key_label=body.key_label,
+        key_id=key_row.id,
+        status=status_str,
+    )
+
+
+@app.get("/users/{user_id}/keys", response_model=ListKeysResponse)
+def list_provider_keys(
+    user_id: str = Depends(require_jwt_user),
+    db: Session = Depends(get_db),
+):
+    """List provider API keys configured for the user (without revealing encrypted key secrets)."""
+    _load_user_or_404(db, user_id)
+    keys = (
+        db.query(ProviderKey)
+        .filter(ProviderKey.user_id == user_id)
+        .order_by(ProviderKey.provider, ProviderKey.key_label)
+        .all()
+    )
+
+    providers_list = sorted(list({pk.provider for pk in keys}))
+    key_infos = [
+        ProviderKeyInfo(
+            id=pk.id,
+            provider=pk.provider,
+            key_label=pk.key_label,
+            created_at=_as_aware(pk.created_at).isoformat() if pk.created_at else None,
+        )
+        for pk in keys
+    ]
+
+    return ListKeysResponse(user_id=user_id, providers=providers_list, keys=key_infos)
+
+
+@app.delete("/users/{user_id}/keys/{key_id}")
+def delete_provider_key(
+    key_id: int,
+    user_id: str = Depends(require_jwt_user),
+    db: Session = Depends(get_db),
+):
+    """Hard-delete a stored provider API key entry."""
+    _load_user_or_404(db, user_id)
+    pk = (
+        db.query(ProviderKey)
+        .filter(ProviderKey.id == key_id, ProviderKey.user_id == user_id)
+        .first()
+    )
+    if not pk:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Provider key not found")
+
+    deleted_info = {"id": pk.id, "provider": pk.provider, "key_label": pk.key_label}
+    db.delete(pk)
+    db.commit()
+
+    return {"user_id": user_id, "deleted": deleted_info}
+
+
 # --- Basic Endpoints ---
 
 @app.get("/health")
@@ -269,3 +602,4 @@ def health_check():
 def chat_completions_stub(key: OneKey = Depends(require_key)):
     """Stub endpoint for Module 7a to test auth validation prior to full router integration."""
     return {"status": "ok"}
+
