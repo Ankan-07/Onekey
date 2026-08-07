@@ -91,8 +91,17 @@ export default function ModelsPage() {
     ready && userId ? `/users/${userId}/models` : null
   );
 
-  const models = data?.models ?? [];
-  const hasDisconnectedProvider = models.some((m) => !m.provider_connected);
+  const rawModels = data?.models;
+  const modelsList: UserModel[] = Array.isArray(rawModels)
+    ? rawModels
+    : rawModels
+    ? Object.values(rawModels).reduce<UserModel[]>(
+        (acc, val) => acc.concat(val as UserModel[]),
+        []
+      )
+    : [];
+
+  const hasDisconnectedProvider = modelsList.some((m) => !m.provider_connected);
 
   const handleToggleEnabled = async (model: UserModel) => {
     if (!userId) return;
@@ -189,7 +198,7 @@ export default function ModelsPage() {
 
       {/* Tier Sections */}
       {TIERS.map(({ tier, title, subtitle, badge }) => {
-        const tierModels = models
+        const tierModels = modelsList
           .filter((m) => m.tier === tier)
           .sort((a, b) => a.priority - b.priority);
 
