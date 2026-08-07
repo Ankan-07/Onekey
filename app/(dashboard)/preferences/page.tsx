@@ -136,7 +136,10 @@ export default function PreferencesPage() {
   const modelsList: UserModel[] = Array.isArray(rawModels)
     ? rawModels
     : rawModels
-    ? (Object.values(rawModels).flat() as UserModel[])
+    ? Object.values(rawModels).reduce<UserModel[]>(
+        (acc, val) => acc.concat(val as UserModel[]),
+        []
+      )
     : [];
 
   const availableModels = Array.from(
