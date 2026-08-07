@@ -21,7 +21,6 @@ from router import (
     _rotate_keys,
     build_payload,          # note: no underscore — that's the actual name in router.py
     _candidate_models,
-    Attempt,
 )
 
 # ---------------------------------------------------------------------------

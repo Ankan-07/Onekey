@@ -1,6 +1,5 @@
 # tests/test_anthropic_adapter.py — pure-function tests for anthropic_adapter.py
 # Zero network, zero DB, zero env vars.
-import pytest
 from anthropic_adapter import (
     resolve_effort, extract_system,
     anthropic_to_openai_body, openai_to_anthropic_message, anthropic_error,

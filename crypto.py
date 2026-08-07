@@ -19,6 +19,7 @@ _KEY_SIZE = 32
 
 _HKDF_INFO = b"onekey:provider-key-encryption:v1"
 
+
 def _master_secret() -> bytes:
     secret = os.environ.get("MASTER_SECRET")
     if not secret:
@@ -27,6 +28,7 @@ def _master_secret() -> bytes:
             "Set it to a strong random string before starting the server."
         )
     return secret.encode("utf-8")
+
 
 def _derive_key() -> bytes:
     hkdf = HKDF(
@@ -37,25 +39,28 @@ def _derive_key() -> bytes:
     )
     return hkdf.derive(_master_secret())
 
+
 def encrypt(plaintext: str) -> str:
-     """Encrypt a UTF-8 string, returning base64(nonce || ciphertext+tag)."""
-     aesgcm = AESGCM(_derive_key())
-     nonce = os.urandom(_NONCE_SIZE)
-     ciphertext = aesgcm.encrypt(nonce, plaintext.encode("utf-8"), None)
-     return base64.b64encode(nonce + ciphertext).decode("ascii")
+    """Encrypt a UTF-8 string, returning base64(nonce || ciphertext+tag)."""
+    aesgcm = AESGCM(_derive_key())
+    nonce = os.urandom(_NONCE_SIZE)
+    ciphertext = aesgcm.encrypt(nonce, plaintext.encode("utf-8"), None)
+    return base64.b64encode(nonce + ciphertext).decode("ascii")
+
 
 def decrypt(token: str) -> str:
     """Reverse :func:`encrypt`. Raises on tampering or wrong key."""
     raw = base64.b64decode(token)
     nonce, ciphertext = raw[:_NONCE_SIZE], raw[_NONCE_SIZE:]
     aesgcm = AESGCM(_derive_key())
-    plaintext = aesgcm.decrypt(nonce, ciphertext,None)
+    plaintext = aesgcm.decrypt(nonce, ciphertext, None)
     return plaintext.decode("utf-8")
 
 
 def hash_token(token: str) -> str:
     """Return the hex SHA-256 of an Onekey token, for storage/comparison"""
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
 
 def mask_token(token: str) -> str:
     """A non-reversible display form, e.g. ``ok-abc…wxyz``."""

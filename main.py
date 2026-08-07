@@ -2,7 +2,6 @@
 # Responsible for request routing, authentication verification, and OpenAI error envelope formatting.
 # Must NEVER bypass authentication on protected endpoints or emit non-OpenAI error schemas to clients.
 
-import env_loader  # MUST be first import to ensure environment variables are loaded before model/crypto initialization
 
 import base64
 from contextlib import asynccontextmanager
@@ -10,7 +9,17 @@ import datetime
 import os
 import secrets
 import time
-from typing import Any, AsyncIterator, Callable, Dict, Generator, List, Literal, Optional, Tuple
+from typing import (
+    Any,
+    AsyncIterator,
+    Callable,
+    Dict,
+    Generator,
+    List,
+    Literal,
+    Optional,
+    Tuple,
+)
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Path, Request, status
 from fastapi.encoders import jsonable_encoder
@@ -24,9 +33,26 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 import anthropic_adapter
-from crypto import decrypt, encrypt, hash_token, mask_token
-from models import OneKey, ProviderHealth, ProviderKey, RequestLog, SessionLocal, User, UserModel, UserPreference, init_db
-from registry import MODEL_TIERS, SUPPORTED_PROVIDERS, build_effective_table, effective_cascade, models_by_tier, parse_model, provider_catalog
+from crypto import encrypt, hash_token, mask_token
+from models import (
+    OneKey,
+    ProviderHealth,
+    ProviderKey,
+    RequestLog,
+    SessionLocal,
+    User,
+    UserModel,
+    UserPreference,
+    init_db,
+)
+from registry import (
+    SUPPORTED_PROVIDERS,
+    build_effective_table,
+    effective_cascade,
+    models_by_tier,
+    parse_model,
+    provider_catalog,
+)
 import responses_adapter
 from router import (
     COOLDOWN_SECONDS,
@@ -36,7 +62,6 @@ from router import (
     open_stream,
     route_chat_completion,
 )
-
 
 
 @asynccontextmanager
@@ -65,6 +90,7 @@ app.add_middleware(
 
 
 # --- Helper Utilities ---
+
 
 def _utcnow() -> datetime.datetime:
     return datetime.datetime.now(datetime.timezone.utc)
@@ -111,6 +137,7 @@ def _decode_model_id(model_id: str) -> Tuple[str, str]:
 
 # --- Error Envelope Formatting ---
 
+
 def _err_type_for_status(status_code: int) -> str:
     """Map HTTP status code to standard OpenAI error type string."""
     if status_code == 401:
@@ -145,13 +172,17 @@ def _openai_error(
 
 
 @app.exception_handler(StarletteHTTPException)
-async def http_exception_handler(request: Request, exc: StarletteHTTPException) -> JSONResponse:
+async def http_exception_handler(
+    request: Request, exc: StarletteHTTPException
+) -> JSONResponse:
     """Catch HTTP exceptions and format as OpenAI error JSON."""
     return _openai_error(exc.status_code, str(exc.detail))
 
 
 @app.exception_handler(RequestValidationError)
-async def validation_exception_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
+async def validation_exception_handler(
+    request: Request, exc: RequestValidationError
+) -> JSONResponse:
     """Catch FastAPI request validation failures (422) and format as OpenAI error JSON."""
     return _openai_error(
         422,
@@ -162,6 +193,7 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
 
 
 # --- Authentication Dependencies ---
+
 
 def _new_token() -> str:
     """Generate a high-entropy secret bearer token with the `ok-` prefix."""
@@ -187,7 +219,11 @@ def require_key(
         )
 
     token_hash = hash_token(token)
-    key = db.query(OneKey).filter(OneKey.key_hash == token_hash, OneKey.revoked == False).first()
+    key = (
+        db.query(OneKey)
+        .filter(OneKey.key_hash == token_hash, OneKey.revoked.is_(False))
+        .first()
+    )
     if not key:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -283,9 +319,7 @@ def require_jwt(authorization: Optional[str] = Header(None)) -> str:
     return sub
 
 
-def require_jwt_user(
-    user_id: str = Path(...), sub: str = Depends(require_jwt)
-) -> str:
+def require_jwt_user(user_id: str = Path(...), sub: str = Depends(require_jwt)) -> str:
     """FastAPI dependency enforcing that the URL parameter `user_id` matches the authenticated JWT `sub`."""
     if sub != user_id:
         raise HTTPException(
@@ -296,6 +330,7 @@ def require_jwt_user(
 
 
 # --- Pydantic Schemas for Management APIs ---
+
 
 class StoreKeyRequest(BaseModel):
     provider: str
@@ -373,6 +408,7 @@ class ChatCompletionRequest(BaseModel):
 
 
 # --- Inference Helpers ---
+
 
 def _resolve_effort(body: ChatCompletionRequest) -> str:
     """Extract effort level from request body.
@@ -520,11 +556,14 @@ def _log_request(
 
 # --- Management Helpers ---
 
+
 def _load_user_or_404(db: Session, user_id: str) -> User:
     """Fetch user by ID or raise HTTP 404 Not Found."""
     user = db.query(User).filter(User.id == user_id).first()
     if not user:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="User not found"
+        )
     return user
 
 
@@ -538,11 +577,14 @@ def _onekey_key_public(k: OneKey) -> dict:
         "rate_limit_per_minute": k.rate_limit_per_minute,
         "revoked": k.revoked,
         "created_at": _as_aware(k.created_at).isoformat() if k.created_at else None,
-        "last_used_at": _as_aware(k.last_used_at).isoformat() if k.last_used_at else None,
+        "last_used_at": _as_aware(k.last_used_at).isoformat()
+        if k.last_used_at
+        else None,
     }
 
 
 # --- Management Endpoints ---
+
 
 @app.post("/users/init")
 def init_user(sub: str = Depends(require_jwt), db: Session = Depends(get_db)):
@@ -621,9 +663,7 @@ def regenerate_primary_key(
     """Regenerate the user's primary API key token, revoking the old primary token."""
     user = _load_user_or_404(db, user_id)
     primary_key = (
-        db.query(OneKey)
-        .filter(OneKey.user_id == user_id, OneKey.is_primary == True)
-        .first()
+        db.query(OneKey).filter(OneKey.user_id == user_id, OneKey.is_primary).first()
     )
 
     raw_token = _new_token()
@@ -667,7 +707,9 @@ def update_onekey_key(
     """Update label, rate limits, or revoked state of an ok- key. Returns 404 if key does not exist or belong to sub."""
     key = db.query(OneKey).filter(OneKey.id == key_id).first()
     if not key or key.user_id != sub:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Onekey key not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Onekey key not found"
+        )
 
     if body.label is not None:
         key.label = body.label
@@ -695,7 +737,9 @@ def delete_onekey_key(
     """Soft-revoke an ok- API key. Returns 404 if key does not exist or belong to sub."""
     key = db.query(OneKey).filter(OneKey.id == key_id).first()
     if not key or key.user_id != sub:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Onekey key not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Onekey key not found"
+        )
 
     key.revoked = True
     db.commit()
@@ -800,7 +844,9 @@ def delete_provider_key(
         .first()
     )
     if not pk:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Provider key not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Provider key not found"
+        )
 
     deleted_info = {"id": pk.id, "provider": pk.provider, "key_label": pk.key_label}
     db.delete(pk)
@@ -810,6 +856,7 @@ def delete_provider_key(
 
 
 # --- Model Override & Preference Endpoints ---
+
 
 @app.get("/users/{user_id}/models")
 def get_user_models(
@@ -838,7 +885,11 @@ def get_user_models(
             item_copy = dict(item)
             if item_copy.get("is_custom"):
                 match = next(
-                    (c for c in custom_rows if c.model_entry == item["model_entry"] and c.tier == tier),
+                    (
+                        c
+                        for c in custom_rows
+                        if c.model_entry == item["model_entry"] and c.tier == tier
+                    ),
                     None,
                 )
                 item_copy["id"] = str(match.id) if match else item["model_entry"]
@@ -863,11 +914,17 @@ def update_user_model(
     if model_id.isdigit():
         custom_model = (
             db.query(UserModel)
-            .filter(UserModel.id == int(model_id), UserModel.user_id == user_id, UserModel.is_custom == True)
+            .filter(
+                UserModel.id == int(model_id),
+                UserModel.user_id == user_id,
+                UserModel.is_custom,
+            )
             .first()
         )
         if not custom_model:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Custom model not found")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="Custom model not found"
+            )
 
         if body.enabled is not None:
             custom_model.enabled = body.enabled
@@ -885,7 +942,7 @@ def update_user_model(
             UserModel.user_id == user_id,
             UserModel.model_entry == model_entry,
             UserModel.tier == tier,
-            UserModel.is_custom == False,
+            not UserModel.is_custom,
         )
         .first()
     )
@@ -929,7 +986,11 @@ def add_custom_model(
             detail=f"Unsupported provider '{body.provider}'. Supported: {SUPPORTED_PROVIDERS}",
         )
 
-    model_entry = body.model if body.model.startswith(f"{body.provider}/") else f"{body.provider}/{body.model}"
+    model_entry = (
+        body.model
+        if body.model.startswith(f"{body.provider}/")
+        else f"{body.provider}/{body.model}"
+    )
 
     custom = UserModel(
         user_id=user_id,
@@ -971,11 +1032,17 @@ def delete_user_model(
     if model_id.isdigit():
         custom = (
             db.query(UserModel)
-            .filter(UserModel.id == int(model_id), UserModel.user_id == user_id, UserModel.is_custom == True)
+            .filter(
+                UserModel.id == int(model_id),
+                UserModel.user_id == user_id,
+                UserModel.is_custom,
+            )
             .first()
         )
         if not custom:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Custom model not found")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="Custom model not found"
+            )
         db.delete(custom)
         db.commit()
         return {"user_id": user_id, "deleted_model_id": model_id}
@@ -987,7 +1054,7 @@ def delete_user_model(
             UserModel.user_id == user_id,
             UserModel.model_entry == model_entry,
             UserModel.tier == tier,
-            UserModel.is_custom == False,
+            not UserModel.is_custom,
         )
         .first()
     )
@@ -1052,7 +1119,10 @@ def update_user_preferences(
 
 # --- Analytics & Discovery Helpers ---
 
-def _provider_request_counts(db: Session, user_id: str, window_seconds: int) -> Dict[str, int]:
+
+def _provider_request_counts(
+    db: Session, user_id: str, window_seconds: int
+) -> Dict[str, int]:
     """Count request attempts per provider in the given window by scanning RequestLog.models_attempted JSON."""
     cutoff = _utcnow() - datetime.timedelta(seconds=window_seconds)
     logs = (
@@ -1072,6 +1142,7 @@ def _provider_request_counts(db: Session, user_id: str, window_seconds: int) -> 
 
 # --- Analytics Endpoints ---
 
+
 @app.get("/users/{user_id}/providers/health")
 def get_provider_health(
     user_id: str = Depends(require_jwt_user),
@@ -1083,7 +1154,9 @@ def get_provider_health(
     configured_keys = _load_provider_keys(db, user_id)
     configured_providers = set(configured_keys.keys())
 
-    health_rows = db.query(ProviderHealth).filter(ProviderHealth.user_id == user_id).all()
+    health_rows = (
+        db.query(ProviderHealth).filter(ProviderHealth.user_id == user_id).all()
+    )
     health_by_provider = {h.provider: h for h in health_rows}
 
     all_providers = sorted(list(configured_providers | set(health_by_provider.keys())))
@@ -1112,9 +1185,15 @@ def get_provider_health(
         providers_res[provider] = {
             "status": status_str,
             "configured": provider in configured_providers,
-            "last_success": _as_aware(health.last_success_at).isoformat() if health and health.last_success_at else None,
-            "last_failure": _as_aware(health.last_failure_at).isoformat() if health and health.last_failure_at else None,
-            "last_429": _as_aware(health.last_429_at).isoformat() if health and health.last_429_at else None,
+            "last_success": _as_aware(health.last_success_at).isoformat()
+            if health and health.last_success_at
+            else None,
+            "last_failure": _as_aware(health.last_failure_at).isoformat()
+            if health and health.last_failure_at
+            else None,
+            "last_429": _as_aware(health.last_429_at).isoformat()
+            if health and health.last_429_at
+            else None,
             "cooldown_seconds_remaining": cooldown_remaining,
             "requests_last_minute": req_min.get(provider, 0),
             "requests_last_day": req_day.get(provider, 0),
@@ -1135,7 +1214,12 @@ def get_user_usage(
     """Retrieve aggregate usage analytics for a user."""
     _load_user_or_404(db, user_id)
 
-    total_requests = db.query(func.count(RequestLog.id)).filter(RequestLog.user_id == user_id).scalar() or 0
+    total_requests = (
+        db.query(func.count(RequestLog.id))
+        .filter(RequestLog.user_id == user_id)
+        .scalar()
+        or 0
+    )
 
     if total_requests == 0:
         return {
@@ -1148,7 +1232,12 @@ def get_user_usage(
             "requests_over_time": {},
         }
 
-    total_tokens = db.query(func.sum(RequestLog.total_tokens)).filter(RequestLog.user_id == user_id).scalar() or 0
+    total_tokens = (
+        db.query(func.sum(RequestLog.total_tokens))
+        .filter(RequestLog.user_id == user_id)
+        .scalar()
+        or 0
+    )
     success_count = (
         db.query(func.count(RequestLog.id))
         .filter(RequestLog.user_id == user_id, RequestLog.status == "success")
@@ -1219,7 +1308,9 @@ def get_user_recent_usage(
     log_list = [
         {
             "id": log.id,
-            "timestamp": _as_aware(log.timestamp).isoformat() if log.timestamp else None,
+            "timestamp": _as_aware(log.timestamp).isoformat()
+            if log.timestamp
+            else None,
             "effort": log.effort,
             "models_attempted": log.models_attempted,
             "succeeded_model": log.succeed_models,
@@ -1238,6 +1329,7 @@ def get_user_recent_usage(
 
 
 # --- Discovery Endpoints ---
+
 
 @app.get("/models")
 def list_models():
@@ -1262,11 +1354,31 @@ def list_v1_models(
     now = int(time.time())
     data = [
         {"id": "onekey-low", "object": "model", "created": now, "owned_by": "onekey"},
-        {"id": "onekey-medium", "object": "model", "created": now, "owned_by": "onekey"},
+        {
+            "id": "onekey-medium",
+            "object": "model",
+            "created": now,
+            "owned_by": "onekey",
+        },
         {"id": "onekey-high", "object": "model", "created": now, "owned_by": "onekey"},
-        {"id": "claude-haiku-4-5", "object": "model", "created": now, "owned_by": "onekey"},
-        {"id": "claude-sonnet-4-6", "object": "model", "created": now, "owned_by": "onekey"},
-        {"id": "claude-opus-4-6", "object": "model", "created": now, "owned_by": "onekey"},
+        {
+            "id": "claude-haiku-4-5",
+            "object": "model",
+            "created": now,
+            "owned_by": "onekey",
+        },
+        {
+            "id": "claude-sonnet-4-6",
+            "object": "model",
+            "created": now,
+            "owned_by": "onekey",
+        },
+        {
+            "id": "claude-opus-4-6",
+            "object": "model",
+            "created": now,
+            "owned_by": "onekey",
+        },
     ]
 
     user_id = key.user_id
@@ -1276,12 +1388,19 @@ def list_v1_models(
     if configured_providers:
         overrides, custom_rows = _load_overrides_customs(db, user_id)
         custom_dicts = [
-            {"model_entry": c.model_entry, "tier": c.tier, "enabled": c.enabled, "priority": c.priority}
+            {
+                "model_entry": c.model_entry,
+                "tier": c.tier,
+                "enabled": c.enabled,
+                "priority": c.priority,
+            }
             for c in custom_rows
         ]
         eff_table = build_effective_table(overrides, custom_dicts)
 
-        pref = db.query(UserPreference).filter(UserPreference.user_id == user_id).first()
+        pref = (
+            db.query(UserPreference).filter(UserPreference.user_id == user_id).first()
+        )
         pref_providers = pref.preferred_providers if pref else []
         excl_providers = set(pref.excluded_providers) if pref else set()
         excl_models = set(pref.excluded_models) if pref else set()
@@ -1314,6 +1433,7 @@ def list_v1_models(
 
 # --- Basic Endpoints ---
 
+
 @app.get("/health")
 def health_check(db: Session = Depends(get_db)):
     """Health check endpoint confirming API status and DB connection capabilities."""
@@ -1328,6 +1448,7 @@ def health_check(db: Session = Depends(get_db)):
 
 
 # --- Streaming Helpers ---
+
 
 def _log_stream(
     db: Session,
@@ -1363,7 +1484,9 @@ def _log_stream(
         return None
 
 
-def _update_stream_log(log_id: Optional[int], usage: Dict[str, Any], started: float) -> None:
+def _update_stream_log(
+    log_id: Optional[int], usage: Dict[str, Any], started: float
+) -> None:
     """Update initial stream RequestLog entry with final usage tokens and total latency."""
     if not log_id:
         return
@@ -1412,7 +1535,9 @@ async def _stream_chat(
     models: List[str],
     deprioritized: set[str],
     *,
-    stream_transform: Optional[Callable[[AsyncIterator[bytes]], AsyncIterator[bytes]]] = None,
+    stream_transform: Optional[
+        Callable[[AsyncIterator[bytes]], AsyncIterator[bytes]]
+    ] = None,
 ) -> Any:
     """Initiate and return an SSE StreamingResponse for chat completions."""
     started = time.perf_counter()
@@ -1434,7 +1559,9 @@ async def _stream_chat(
 
     _update_provider_health(db, user.id, handle.attempts)
     log_id = _log_stream(db, user.id, effort, handle, started, key.id)
-    byte_stream = _stream_with_usage_log(handle, tier=effort, log_id=log_id, started=started)
+    byte_stream = _stream_with_usage_log(
+        handle, tier=effort, log_id=log_id, started=started
+    )
 
     if stream_transform is not None:
         byte_stream = stream_transform(byte_stream)
@@ -1447,7 +1574,9 @@ async def _stream_chat(
         "X-Accel-Buffering": "no",
         "Connection": "keep-alive",
     }
-    return StreamingResponse(byte_stream, media_type="text/event-stream", headers=headers)
+    return StreamingResponse(
+        byte_stream, media_type="text/event-stream", headers=headers
+    )
 
 
 def _load_overrides_customs(
@@ -1475,7 +1604,9 @@ async def _execute_chat_completion(
     *,
     forward_body: Dict[str, Any],
     effort: str,
-    stream_transform: Optional[Callable[[AsyncIterator[bytes]], AsyncIterator[bytes]]] = None,
+    stream_transform: Optional[
+        Callable[[AsyncIterator[bytes]], AsyncIterator[bytes]]
+    ] = None,
 ) -> Any:
     """Core execution pipeline for chat completion & responses endpoints."""
     if key.rate_limit_per_minute:
@@ -1549,15 +1680,8 @@ async def _execute_chat_completion(
     return result.data
 
 
-# --- Basic Endpoints ---
-
-@app.get("/health")
-def health_check():
-    """Health check endpoint confirming API status and DB connection capabilities."""
-    return {"status": "ok", "database": "ok", "version": "1.0.0"}
-
-
 # --- Inference Endpoints ---
+
 
 @app.post("/v1/chat/completions")
 async def create_chat_completion(
@@ -1595,7 +1719,9 @@ async def create_response(
 
     stream_transform = None
     if raw_body.get("stream"):
-        stream_transform = lambda s: responses_adapter.convert_openai_stream_to_responses(s, raw_body)
+
+        def stream_transform(s):
+            return responses_adapter.convert_openai_stream_to_responses(s, raw_body)
 
     result = await _execute_chat_completion(
         db,
@@ -1630,7 +1756,9 @@ async def create_anthropic_message(
     if not isinstance(raw_body, dict):
         return JSONResponse(
             status_code=400,
-            content=anthropic_adapter.anthropic_error(400, "Request body must be a JSON object."),
+            content=anthropic_adapter.anthropic_error(
+                400, "Request body must be a JSON object."
+            ),
         )
 
     user = _load_user_or_404(db, key.user_id)
@@ -1697,20 +1825,25 @@ async def create_anthropic_message(
             _log_request(db, user.id, effort, [], None, started, 409, key.id)
             return JSONResponse(
                 status_code=409,
-                content=anthropic_adapter.anthropic_error(409, str(exc), error_type="invalid_request_error"),
+                content=anthropic_adapter.anthropic_error(
+                    409, str(exc), error_type="invalid_request_error"
+                ),
             )
         except AllProvidersFailed as exc:
             _update_provider_health(db, user.id, exc.attempts)
             _log_request(db, user.id, effort, exc.attempts, None, started, 502, key.id)
             return JSONResponse(
                 status_code=502,
-                content=anthropic_adapter.anthropic_error(502, "All candidate models were exhausted."),
+                content=anthropic_adapter.anthropic_error(
+                    502, "All candidate models were exhausted."
+                ),
             )
 
         _update_provider_health(db, user.id, handle.attempts)
         log_id = _log_stream(db, user.id, effort, handle, started, key.id)
 
         usage: Dict[str, Any] = {}
+
         async def _iter_stream_bytes():
             try:
                 async for chunk in anthropic_adapter.convert_openai_stream_to_anthropic(
@@ -1725,7 +1858,9 @@ async def create_anthropic_message(
             "X-Onekey-Model": handle.model_entry,
             "Cache-Control": "no-cache",
         }
-        return StreamingResponse(_iter_stream_bytes(), media_type="text/event-stream", headers=headers)
+        return StreamingResponse(
+            _iter_stream_bytes(), media_type="text/event-stream", headers=headers
+        )
 
     # Non-streaming path
     try:
@@ -1741,20 +1876,26 @@ async def create_anthropic_message(
         _log_request(db, user.id, effort, [], None, started, 409, key.id)
         return JSONResponse(
             status_code=409,
-            content=anthropic_adapter.anthropic_error(409, str(exc), error_type="invalid_request_error"),
+            content=anthropic_adapter.anthropic_error(
+                409, str(exc), error_type="invalid_request_error"
+            ),
         )
     except AllProvidersFailed as exc:
         _update_provider_health(db, user.id, exc.attempts)
         _log_request(db, user.id, effort, exc.attempts, None, started, 502, key.id)
         return JSONResponse(
             status_code=502,
-            content=anthropic_adapter.anthropic_error(502, "All candidate models were exhausted."),
+            content=anthropic_adapter.anthropic_error(
+                502, "All candidate models were exhausted."
+            ),
         )
 
     _update_provider_health(db, user.id, result.attempts)
     _log_request(db, user.id, effort, result.attempts, result, started, 200, key.id)
 
-    anthropic_resp = anthropic_adapter.openai_to_anthropic_message(result.data, model=request_model)
+    anthropic_resp = anthropic_adapter.openai_to_anthropic_message(
+        result.data, model=request_model
+    )
     return anthropic_resp
 
 
@@ -1774,6 +1915,3 @@ async def count_anthropic_tokens(
 
     tokens = anthropic_adapter.estimate_input_tokens(raw_body)
     return {"input_tokens": tokens}
-
-
-

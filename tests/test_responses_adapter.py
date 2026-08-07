@@ -1,6 +1,5 @@
 # tests/test_responses_adapter.py — pure-function unit tests for responses_adapter.py
 # Zero network, zero DB, zero env vars.
-import json
 import pytest
 from responses_adapter import (
     resolve_responses_effort,
