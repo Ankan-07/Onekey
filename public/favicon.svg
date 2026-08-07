@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32" fill="none">
+  <!-- Squircle brand background with subtle top-to-bottom coral gradient -->
+  <rect width="32" height="32" rx="9" fill="url(#coral-gradient)" />
+  
+  <!-- Subtle inner border for a premium, clean aesthetic -->
+  <rect x="0.75" y="0.75" width="30.5" height="30.5" rx="8.25" stroke="#faf9f5" stroke-opacity="0.12" stroke-width="1.5" />
+
+  <!-- Clean, stylized key representing the secure single gateway key -->
+  <path d="M22 10C19.7909 10 18 11.7909 18 14C18 14.831 18.2536 15.5996 18.6859 16.2343L9.29289 25.6274C9.10536 25.8149 9 26.0692 9 26.3343V27.5C9 27.7761 9.22386 28 9.5 28H10.6657C10.9308 28 11.1851 27.8946 11.3726 27.7071L12.7071 26.3726C12.8946 26.1851 13 25.9308 13 25.6657V24.8343C13 24.5692 13.1054 24.3149 13.2929 24.1274L14.7071 22.7071C14.8946 22.5196 15 22.2653 15 22.0002V21.1657C15 20.9006 15.1054 20.6463 15.2929 20.4588L15.7071 20.0446C16.3392 20.5732 17.1354 20.9 18 20.9C20.2091 20.9 22 19.1091 22 16.9C22 14.6909 20.2091 12.9 18 12.9" />
+
+  <!-- Key head outer / inner loop geometry -->
+  <path fill-rule="evenodd" clip-rule="evenodd" d="M21 14C21 15.6569 19.6569 17 18 17C16.3431 17 15 15.6569 15 14C15 12.3431 16.3431 11 18 11C19.6569 11 21 12.3431 21 14ZM18 15.5C18.8284 15.5 19.5 14.8284 19.5 14C19.5 13.1716 18.8284 12.5 18 12.5C17.1716 12.5 16.5 13.1716 16.5 14C16.5 14.8284 17.1716 15.5 18 15.5Z" fill="#faf9f5" />
+  
+  <!-- Fill for the key shank and teeth -->
+  <path d="M15.5 16.5L9.5 22.5V25H12V23.5H13.5V22H15V19.5L16.5 18L15.5 16.5Z" fill="#faf9f5" />
+
+  <defs>
+    <linearGradient id="coral-gradient" x1="16" y1="0" x2="16" y2="32" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#e08a6d" />
+      <stop offset="1" stop-color="#cc785c" />
+    </linearGradient>
+  </defs>
+</svg>
