@@ -10,7 +10,7 @@ from sqlalchemy import (
     create_engine,
 )
 from sqlalchemy.engine import make_url
-from sqlalchemy.orm import(
+from sqlalchemy.orm import (
     DeclarativeBase,
     Mapped,
     mapped_column,
@@ -22,6 +22,7 @@ import datetime as dt
 import os
 from typing import Optional
 
+
 def _resolve_db_url():
     env = os.environ.get("DATABASE_URL")
     if not env:
@@ -30,6 +31,7 @@ def _resolve_db_url():
             "Set it to your Postgres connection string before starting the server."
         )
     return make_url(env)
+
 
 _DB_URL = _resolve_db_url()
 DATABASE_URL = _DB_URL.render_as_string(hide_password=False)
@@ -47,32 +49,39 @@ SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False
 
 sessionlocal = SessionLocal
 
+
 class Base(DeclarativeBase):
     pass
+
 
 def _utcnow() -> dt.datetime:
     return dt.datetime.now(dt.timezone.utc)
 
+
 class User(Base):
     __tablename__ = "users"
 
-    id:Mapped[str] = mapped_column(String, primary_key=True)
+    id: Mapped[str] = mapped_column(String, primary_key=True)
 
-    api_key: Mapped[str] = mapped_column(String, unique=True, index=True, nullable=False)
+    api_key: Mapped[str] = mapped_column(
+        String, unique=True, index=True, nullable=False
+    )
 
     created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=_utcnow)
 
     provider_keys: Mapped[list["ProviderKey"]] = relationship(
-        back_populates= "user",
-        cascade= "all, delete-orphan"
+        back_populates="user", cascade="all, delete-orphan"
     )
+
 
 class ProviderKey(Base):
     __tablename__ = "provider_keys"
 
-    __table_args__ = (UniqueConstraint(
-        "user_id", "provider", "key_label", name="uq_user_provider_label"
-    ),)
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id", "provider", "key_label", name="uq_user_provider_label"
+        ),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     user_id: Mapped[str] = mapped_column(
@@ -82,8 +91,11 @@ class ProviderKey(Base):
     key_label: Mapped[str] = mapped_column(String, nullable=False, default="default")
     encrypted_key: Mapped[str] = mapped_column(String, nullable=False)
     created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=_utcnow)
-    updated_at: Mapped[dt.datetime] = mapped_column(DateTime, default= _utcnow,onupdate=_utcnow)
+    updated_at: Mapped[dt.datetime] = mapped_column(
+        DateTime, default=_utcnow, onupdate=_utcnow
+    )
     user: Mapped["User"] = relationship(back_populates="provider_keys")
+
 
 class RequestLog(Base):
     """one row per /v1/chat/completions request, for usage analytics"""
@@ -94,18 +106,22 @@ class RequestLog(Base):
     user_id: Mapped[str] = mapped_column(
         ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False
     )
-    timestamp:Mapped[dt.datetime] = mapped_column(DateTime, default=_utcnow, index=True)
-    effort:Mapped[str] = mapped_column(String, nullable=False)
-    models_attempted:Mapped[list] = mapped_column(JSON, default=list)
-    succeed_models:Mapped[Optional[str]] = mapped_column(String, nullable=True)
-    provider:Mapped[Optional[str]] = mapped_column(String, nullable=True)
-    prompt_tokens:Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
-    completion_tokens:Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
-    total_tokens:Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    timestamp: Mapped[dt.datetime] = mapped_column(
+        DateTime, default=_utcnow, index=True
+    )
+    effort: Mapped[str] = mapped_column(String, nullable=False)
+    models_attempted: Mapped[list] = mapped_column(JSON, default=list)
+    succeed_models: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    provider: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    prompt_tokens: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    completion_tokens: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    total_tokens: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     latency_ms: Mapped[int] = mapped_column(Integer, default=0)
-    status: Mapped[str] = mapped_column(String, nullable=False) #sucess or error
+    status: Mapped[str] = mapped_column(String, nullable=False)  # sucess or error
     status_code: Mapped[int] = mapped_column(Integer, default=0)
-    onekey_key_id: Mapped[Optional[int]] = mapped_column(Integer, index=True, nullable=True)
+    onekey_key_id: Mapped[Optional[int]] = mapped_column(
+        Integer, index=True, nullable=True
+    )
 
 
 class OneKey(Base):

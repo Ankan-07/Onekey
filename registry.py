@@ -48,6 +48,7 @@ PROVIDER_BASE_URLS: Dict[str, str] = {p: m["base_url"] for p, m in PROVIDERS.ite
 # The set of providers a user may register keys for.
 SUPPORTED_PROVIDERS = sorted(PROVIDERS.keys())
 
+
 def provider_catalog(overrides=None):
     if overrides is None:
         overrides = {}
@@ -67,6 +68,7 @@ def provider_catalog(overrides=None):
         out[provider] = merged
 
     return out
+
 
 # Effort tier -> ordered list of model entries to try.
 
@@ -116,6 +118,7 @@ _BARE_PREFIX_TO_PROVIDER = {
     "gemini": "gemini",
     "mistral": "mistral",
 }
+
 
 def parse_model(entry: str) -> Tuple[str, str]:
     """Return (provider, upstream_model_name) for a registry entry.
@@ -171,6 +174,7 @@ def cascade_models(effort: str) -> List[str]:
                 ordered.append(entry)
     return ordered
 
+
 def all_models() -> List[Dict[str, str]]:
     """The full global registry as a flat list of {model_entry, provider, tier}."""
     out: List[Dict[str, str]] = []
@@ -180,6 +184,7 @@ def all_models() -> List[Dict[str, str]]:
                 {"model_entry": entry, "provider": parse_model(entry)[0], "tier": tier}
             )
     return out
+
 
 def models_by_tier() -> Dict[str, List[Dict[str, str]]]:
     """The global registry grouped by tier, each entry resolved to its provider."""
@@ -194,6 +199,7 @@ def models_by_tier() -> Dict[str, List[Dict[str, str]]]:
             for entry in MODEL_TIERS[tier]
         ]
     return grouped
+
 
 def build_effective_table(
     overrides: Dict[Tuple[str, str], Dict[str, Any]],
@@ -242,6 +248,7 @@ def build_effective_table(
     for tier in table:
         table[tier].sort(key=lambda m: (m["priority"], m["model_entry"]))
     return table
+
 
 def effective_cascade(
     table: Dict[str, List[Dict[str, Any]]],

@@ -14,24 +14,28 @@ COOLDOWN_SECONDS = 60
 
 # In-process round-robin cursors, keyed by "<rotation_id>:<provider>". Advancing
 # per call spreads load across a provider's multiple keys on successive requests.
-_rr_cursor: Dict[str, int]= {}
+_rr_cursor: Dict[str, int] = {}
 
-def _rotate_keys(keys:List[tuple[str,str]],rotation_key:str) ->List[tuple[str,str]]:
-    if len(keys) <=1:
+
+def _rotate_keys(
+    keys: List[tuple[str, str]], rotation_key: str
+) -> List[tuple[str, str]]:
+    if len(keys) <= 1:
         return list(keys)
-    idx = _rr_cursor.get(rotation_key,0)%len(keys)
-    _rr_cursor[rotation_key] = idx+1
-    return keys[idx:] +keys[:idx]
+    idx = _rr_cursor.get(rotation_key, 0) % len(keys)
+    _rr_cursor[rotation_key] = idx + 1
+    return keys[idx:] + keys[:idx]
+
 
 @dataclass
 class Attempt:
-    model_entry:str
-    provider:str
-    status:str
-    error:str
-    key_label:str
+    model_entry: str
+    provider: str
+    status: str
+    error: str
+    key_label: str
 
-    def as_dict(self) ->Dict[str,Any]:
+    def as_dict(self) -> Dict[str, Any]:
         return {
             "model": self.model_entry,
             "provider": self.provider,
@@ -40,20 +44,23 @@ class Attempt:
             "key_label": self.key_label,
         }
 
+
 @dataclass
 class RouteResult:
-    data:Dict[str,Any]
-    model_entry:str
-    provider:str
-    upstream_model:str
-    attempts:List[Attempt]
+    data: Dict[str, Any]
+    model_entry: str
+    provider: str
+    upstream_model: str
+    attempts: List[Attempt]
 
     @property
-    def usage(self) -> Dict[str,Any]:
+    def usage(self) -> Dict[str, Any]:
         return self.data.get("usage") or {}
+
 
 class NoModelsAvailable(Exception):
     """User has no key for any model in the requested tier."""
+
 
 class AllProvidersFailed(Exception):
     def __init__(self, attempts: List[Attempt]):
@@ -65,20 +72,20 @@ class AllProvidersFailed(Exception):
         )
         super().__init__(f"All providers failed: {summary}")
 
-def _candidate_models(
-        models:List[str],
-        available_providers:set[str],
-        deprioritized_providers:Optional[set[str]]=None
-) -> list[tuple[str,str,str]]:
 
+def _candidate_models(
+    models: List[str],
+    available_providers: set[str],
+    deprioritized_providers: Optional[set[str]] = None,
+) -> list[tuple[str, str, str]]:
     deprioritized = deprioritized_providers or set()
-    preferred: List[tuple[str,str,str]] = []
-    deffered: List[tuple[str,str,str]] = []
+    preferred: List[tuple[str, str, str]] = []
+    deffered: List[tuple[str, str, str]] = []
     for entry in models:
-        provider,upstream_model = parse_model(entry)
+        provider, upstream_model = parse_model(entry)
         if provider not in available_providers:
             continue
-        triple = (entry,provider, upstream_model)
+        triple = (entry, provider, upstream_model)
         if provider in deprioritized:
             deffered.append(triple)
         else:
@@ -86,26 +93,30 @@ def _candidate_models(
 
     return preferred + deffered
 
-def build_payload(body:Dict[str,Any], upstream_model:str) -> Dict[str,Any]:
+
+def build_payload(body: Dict[str, Any], upstream_model: str) -> Dict[str, Any]:
     """Forward an OpenAI-style body, swapping in the upstream model name.
 
     The custom ``effort`` field is stripped — it's ours, not the provider's.
     A client-supplied ``model`` is ignored in favor of the routed model.
     """
-    payload = {k:v for k,v in body.items() if k not in ("effort", "model")}
+    payload = {k: v for k, v in body.items() if k not in ("effort", "model")}
     payload["model"] = upstream_model
     return payload
 
+
 async def route_chat_completion(
-        *,
-        models: List[str],
-        body: Dict[str,Any],
-        provider_keys: Dict[str,List[tuple[str,str]]],
-        deprioritized_providers: Optional[set[str]],
-        rotation_id:str = "",
-        effort:str = "",
+    *,
+    models: List[str],
+    body: Dict[str, Any],
+    provider_keys: Dict[str, List[tuple[str, str]]],
+    deprioritized_providers: Optional[set[str]],
+    rotation_id: str = "",
+    effort: str = "",
 ) -> RouteResult:
-    candidates = _candidate_models(models,set(provider_keys.keys()), deprioritized_providers)
+    candidates = _candidate_models(
+        models, set(provider_keys.keys()), deprioritized_providers
+    )
     if not candidates:
         raise NoModelsAvailable(
             "No enabled model matches your configured providers and preferences"
@@ -114,12 +125,12 @@ async def route_chat_completion(
     attempts: List[Attempt] = []
 
     async with httpx.AsyncClient(timeout=_REQUEST_TIMEOUT) as client:
-        for model_entry, provider,upstream_model in candidates:
+        for model_entry, provider, upstream_model in candidates:
             base_url = PROVIDER_BASE_URLS[provider]
-            payload = build_payload(body,upstream_model)
+            payload = build_payload(body, upstream_model)
             keys = _rotate_keys(provider_keys[provider], f"{rotation_id}:{provider}")
 
-            for key_label,encrypted_key in keys:
+            for key_label, encrypted_key in keys:
                 api_key = decrypt(encrypted_key)
                 try:
                     res = await client.post(
@@ -132,20 +143,25 @@ async def route_chat_completion(
                     )
                 except httpx.RequestError as exc:
                     attempts.append(
-                        Attempt(model_entry,provider,None,str(exc), key_label)
+                        Attempt(model_entry, provider, None, str(exc), key_label)
                     )
                     continue
 
-                if res.status_code >=400:
+                if res.status_code >= 400:
                     attempts.append(
-                        Attempt(model_entry,provider,res.status_code,res.text[:200],key_label)
-
+                        Attempt(
+                            model_entry,
+                            provider,
+                            res.status_code,
+                            res.text[:200],
+                            key_label,
+                        )
                     )
                     continue
 
                 data = res.json()
                 attempts.append(
-                    Attempt(model_entry,provider,res.status_code,None,key_label)
+                    Attempt(model_entry, provider, res.status_code, None, key_label)
                 )
 
                 return RouteResult(
@@ -153,45 +169,48 @@ async def route_chat_completion(
                     provider=provider,
                     model_entry=model_entry,
                     upstream_model=upstream_model,
-                    attempts=attempts
+                    attempts=attempts,
                 )
     raise AllProvidersFailed(attempts)
+
 
 @dataclass
 class StreamHandle:
     client: httpx.AsyncClient
-    response:httpx.Response
-    provider:str
-    model_entry:str
-    upstream_model:str
-    key_label:Optional[str]
-    attempts:List[Attempt]
+    response: httpx.Response
+    provider: str
+    model_entry: str
+    upstream_model: str
+    key_label: Optional[str]
+    attempts: List[Attempt]
+
 
 async def open_stream(
     *,
-    models:List[str],
-    body: Dict[str,Any],
-    provider_keys:Dict[str,List[tuple[str,str]]],
-    deprioritized_providers:Optional[set[str]]=None,
-    rotation_id:str = ""
-)-> StreamHandle:
-    candidates = _candidate_models(models,set(provider_keys.keys()),deprioritized_providers)
+    models: List[str],
+    body: Dict[str, Any],
+    provider_keys: Dict[str, List[tuple[str, str]]],
+    deprioritized_providers: Optional[set[str]] = None,
+    rotation_id: str = "",
+) -> StreamHandle:
+    candidates = _candidate_models(
+        models, set(provider_keys.keys()), deprioritized_providers
+    )
     if not candidates:
         raise NoModelsAvailable(
             "No enabled model matches your configured providers and preferences. "
             "Add a provider key, enable a model, or relax your exclusions."
-        
         )
-    attempts:List[Attempt] = []
+    attempts: List[Attempt] = []
     client = httpx.AsyncClient(timeout=_STREAM_TIMEOUT)
     try:
-        for model_entry,provider,upstream_model in candidates:
+        for model_entry, provider, upstream_model in candidates:
             base_url = PROVIDER_BASE_URLS[provider]
             keys = _rotate_keys(provider_keys[provider], f"{rotation_id}:{provider}")
 
-            for key_label,encrypted_key in keys:
+            for key_label, encrypted_key in keys:
                 api_key = decrypt(encrypted_key)
-                base_payload = build_payload(body,upstream_model)
+                base_payload = build_payload(body, upstream_model)
                 base_payload["stream"] = True
                 # Prefer usage in-stream when supported; retry without
                 # stream_options on 4xx before failing over to the next key.
@@ -210,28 +229,27 @@ async def open_stream(
                         json=payload,
                     )
                     try:
-                        res = await client.send(req,stream=True)
+                        res = await client.send(req, stream=True)
                     except httpx.RequestError as exc:
                         attempts.append(
-                            Attempt(model_entry,provider,None,str(exc), key_label)
-
+                            Attempt(model_entry, provider, None, str(exc), key_label)
                         )
                         break
 
-                    if res.status_code >=400:
+                    if res.status_code >= 400:
                         # Error before any stream data -> safe to fail over.
                         text = (await res.aread()).decode("utf-8", "replace")[:200]
                         await res.aclose()
                         attempts.append(
-                            Attempt(model_entry,provider,res.status_code,text,key_label)
+                            Attempt(
+                                model_entry, provider, res.status_code, text, key_label
+                            )
                         )
-                        if variant_idx <len(stream_payloads) -1:
+                        if variant_idx < len(stream_payloads) - 1:
                             continue
                         break
                     attempts.append(
-                        Attempt(
-                            model_entry,provider,res.status_code,None,key_label
-                        )
+                        Attempt(model_entry, provider, res.status_code, None, key_label)
                     )
                     return StreamHandle(
                         client=client,
@@ -240,14 +258,15 @@ async def open_stream(
                         model_entry=model_entry,
                         upstream_model=upstream_model,
                         key_label=key_label,
-                        attempts=attempts
+                        attempts=attempts,
                     )
-        #No candidate started streaing
+        # No candidate started streaing
         await client.aclose()
         raise AllProvidersFailed(attempts)
     except BaseException:
         await client.aclose()
         raise
+
 
 def _attempts_for_sse(
     attempts: List[Attempt], served_provider: str, served_model: str
@@ -276,6 +295,7 @@ def _attempts_for_sse(
         )
     return rows
 
+
 def _accumulate_usage_from_sse(text: str, usage: Dict[str, Any]) -> None:
     """Merge ``usage`` from OpenAI-style ``data: {...}`` SSE lines (last wins)."""
     for line in text.split("\n"):
@@ -292,11 +312,9 @@ def _accumulate_usage_from_sse(text: str, usage: Dict[str, Any]) -> None:
         if isinstance(chunk_usage, dict) and chunk_usage:
             usage.update(chunk_usage)
 
+
 async def iter_stream(
-    handle:StreamHandle,
-    *,
-    tier:str="",
-    usage_out: Optional[Dict[str,Any]] = None
+    handle: StreamHandle, *, tier: str = "", usage_out: Optional[Dict[str, Any]] = None
 ) -> AsyncIterator[bytes]:
     """
     if the upstream drops mid-stream, the error surfaces here — there is no
@@ -305,11 +323,9 @@ async def iter_stream(
     routing = {
         "tier": tier,
         "attempted": _attempts_for_sse(
-            handle.attempts,handle.provider,handle.model_entry
-            ),
-        "served": {
-            "provider": handle.provider, "model":handle.model_entry
-        }
+            handle.attempts, handle.provider, handle.model_entry
+        ),
+        "served": {"provider": handle.provider, "model": handle.model_entry},
     }
     yield f"event: routing\ndata: {json.dumps(routing)}\n\n".encode()
     stream_started = time.perf_counter()
@@ -317,20 +333,11 @@ async def iter_stream(
         async for chunk in handle.response.aiter_bytes():
             if usage_out is not None:
                 _accumulate_usage_from_sse(
-                    chunk.decode("utf-8", errors = "replace"),
-                    usage_out
+                    chunk.decode("utf-8", errors="replace"), usage_out
                 )
             yield chunk
     finally:
         await handle.response.aclose()
         await handle.client.aclose()
-    done = {"latency_ms": int((time.perf_counter() - stream_started)*1000)}
+    done = {"latency_ms": int((time.perf_counter() - stream_started) * 1000)}
     yield f"event: done\ndata: {json.dumps(done)}\n\n".encode()
-
-
-
-    
-
-
-    
-        
