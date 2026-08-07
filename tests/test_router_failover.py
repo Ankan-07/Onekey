@@ -15,7 +15,6 @@ from router import (
     route_chat_completion,
     open_stream,
     AllProvidersFailed,
-    NoModelsAvailable,
 )
 
 

@@ -7,7 +7,6 @@ from registry import PROVIDER_BASE_URLS, parse_model
 
 import json
 import time
-import httpx
 
 _REQUEST_TIMEOUT = httpx.Timeout(60.0, connect=10.0)
 _STREAM_TIMEOUT = httpx.Timeout(None, connect=10.0)

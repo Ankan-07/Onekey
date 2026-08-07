@@ -17,6 +17,7 @@ from sqlalchemy.orm import(
     relationship,
     sessionmaker,
 )
+from sqlalchemy.pool import StaticPool
 import datetime as dt
 import os
 from typing import Optional
@@ -29,8 +30,6 @@ def _resolve_db_url():
             "Set it to your Postgres connection string before starting the server."
         )
     return make_url(env)
-
-from sqlalchemy.pool import StaticPool
 
 _DB_URL = _resolve_db_url()
 DATABASE_URL = _DB_URL.render_as_string(hide_password=False)

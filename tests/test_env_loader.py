@@ -5,9 +5,7 @@
 # What it must never do: actually read from .env files (we patch load_dotenv).
 
 import os
-import pytest
-from unittest.mock import patch, MagicMock
-import importlib
+from unittest.mock import patch
 
 
 class TestLoadProjectEnv:
@@ -20,7 +18,7 @@ class TestLoadProjectEnv:
         # Remove SUPABASE_URL if present so the fallback branch runs
         env_before = os.environ.pop("SUPABASE_URL", None)
         try:
-            with patch("env_loader.load_dotenv"):  # don't actually read .env files
+            with patch("dotenv.load_dotenv"):  # don't actually read .env files
                 with patch.dict(os.environ, env_patch, clear=False):
                     import env_loader
                     env_loader.load_project_env()
@@ -38,7 +36,7 @@ class TestLoadProjectEnv:
             "SUPABASE_URL": original,
             "NEXT_PUBLIC_SUPABASE_URL": "https://different.supabase.co",
         }
-        with patch("env_loader.load_dotenv"):
+        with patch("dotenv.load_dotenv"):
             with patch.dict(os.environ, env_patch, clear=False):
                 import env_loader
                 env_loader.load_project_env()
@@ -46,6 +44,6 @@ class TestLoadProjectEnv:
 
     def test_load_project_env_does_not_raise_without_env_files(self):
         """load_project_env should not raise even when .env / .env.local are absent."""
-        with patch("env_loader.load_dotenv"):
+        with patch("dotenv.load_dotenv"):
             import env_loader
             env_loader.load_project_env()   # should complete without error

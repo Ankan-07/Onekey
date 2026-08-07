@@ -10,7 +10,7 @@ os.environ.setdefault("MASTER_SECRET", "test-master-secret-key-1234567890")
 os.environ["DATABASE_URL"] = "sqlite:///:memory:"
 
 from fastapi.testclient import TestClient
-from main import app, get_db
+from main import app
 from models import Base, OneKey, ProviderKey, User, engine
 from router import RouteResult, Attempt
 from crypto import encrypt, hash_token

@@ -2,7 +2,6 @@
 # Responsible for request routing, authentication verification, and OpenAI error envelope formatting.
 # Must NEVER bypass authentication on protected endpoints or emit non-OpenAI error schemas to clients.
 
-import env_loader  # MUST be first import to ensure environment variables are loaded before model/crypto initialization
 
 import base64
 from contextlib import asynccontextmanager
@@ -24,9 +23,9 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 import anthropic_adapter
-from crypto import decrypt, encrypt, hash_token, mask_token
+from crypto import encrypt, hash_token, mask_token
 from models import OneKey, ProviderHealth, ProviderKey, RequestLog, SessionLocal, User, UserModel, UserPreference, init_db
-from registry import MODEL_TIERS, SUPPORTED_PROVIDERS, build_effective_table, effective_cascade, models_by_tier, parse_model, provider_catalog
+from registry import SUPPORTED_PROVIDERS, build_effective_table, effective_cascade, models_by_tier, parse_model, provider_catalog
 import responses_adapter
 from router import (
     COOLDOWN_SECONDS,
@@ -187,7 +186,7 @@ def require_key(
         )
 
     token_hash = hash_token(token)
-    key = db.query(OneKey).filter(OneKey.key_hash == token_hash, OneKey.revoked == False).first()
+    key = db.query(OneKey).filter(OneKey.key_hash == token_hash, OneKey.revoked.is_(False)).first()
     if not key:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -622,7 +621,7 @@ def regenerate_primary_key(
     user = _load_user_or_404(db, user_id)
     primary_key = (
         db.query(OneKey)
-        .filter(OneKey.user_id == user_id, OneKey.is_primary == True)
+        .filter(OneKey.user_id == user_id, OneKey.is_primary)
         .first()
     )
 
@@ -863,7 +862,7 @@ def update_user_model(
     if model_id.isdigit():
         custom_model = (
             db.query(UserModel)
-            .filter(UserModel.id == int(model_id), UserModel.user_id == user_id, UserModel.is_custom == True)
+            .filter(UserModel.id == int(model_id), UserModel.user_id == user_id, UserModel.is_custom)
             .first()
         )
         if not custom_model:
@@ -885,7 +884,7 @@ def update_user_model(
             UserModel.user_id == user_id,
             UserModel.model_entry == model_entry,
             UserModel.tier == tier,
-            UserModel.is_custom == False,
+            not UserModel.is_custom,
         )
         .first()
     )
@@ -971,7 +970,7 @@ def delete_user_model(
     if model_id.isdigit():
         custom = (
             db.query(UserModel)
-            .filter(UserModel.id == int(model_id), UserModel.user_id == user_id, UserModel.is_custom == True)
+            .filter(UserModel.id == int(model_id), UserModel.user_id == user_id, UserModel.is_custom)
             .first()
         )
         if not custom:
@@ -987,7 +986,7 @@ def delete_user_model(
             UserModel.user_id == user_id,
             UserModel.model_entry == model_entry,
             UserModel.tier == tier,
-            UserModel.is_custom == False,
+            not UserModel.is_custom,
         )
         .first()
     )
@@ -1549,14 +1548,6 @@ async def _execute_chat_completion(
     return result.data
 
 
-# --- Basic Endpoints ---
-
-@app.get("/health")
-def health_check():
-    """Health check endpoint confirming API status and DB connection capabilities."""
-    return {"status": "ok", "database": "ok", "version": "1.0.0"}
-
-
 # --- Inference Endpoints ---
 
 @app.post("/v1/chat/completions")
@@ -1595,7 +1586,8 @@ async def create_response(
 
     stream_transform = None
     if raw_body.get("stream"):
-        stream_transform = lambda s: responses_adapter.convert_openai_stream_to_responses(s, raw_body)
+        def stream_transform(s):
+            return responses_adapter.convert_openai_stream_to_responses(s, raw_body)
 
     result = await _execute_chat_completion(
         db,

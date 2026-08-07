@@ -9,8 +9,6 @@
 # lives only in RAM for the duration of the process. Perfect for tests: fast,
 # isolated, and auto-cleaned when the process exits.
 
-import os
-import datetime as dt
 import pytest
 
 from sqlalchemy import create_engine, inspect
@@ -19,7 +17,7 @@ from sqlalchemy.orm import sessionmaker
 # models.py reads DATABASE_URL at import time (module level), so conftest.py
 # must have set DATABASE_URL=sqlite:///:memory: before we get here.
 import models
-from models import Base, User, ProviderKey, OneKey, ProviderHealth, UserModel, UserPreference, RequestLog
+from models import Base, User, ProviderKey, OneKey, ProviderHealth, UserPreference, RequestLog
 
 
 # ---------------------------------------------------------------------------

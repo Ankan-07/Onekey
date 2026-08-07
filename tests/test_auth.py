@@ -3,7 +3,6 @@ import os
 os.environ.setdefault("MASTER_SECRET", "test-secret")
 os.environ["DATABASE_URL"] = "sqlite:///:memory:"
 
-import pytest
 from fastapi.testclient import TestClient
 from main import app, require_jwt
 from models import init_db

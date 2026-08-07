@@ -9,8 +9,6 @@ import pytest
 
 from registry import (
     PROVIDERS,
-    PROVIDER_BASE_URLS,
-    SUPPORTED_PROVIDERS,
     MODEL_TIERS,
     parse_model,
     models_for_effort,
