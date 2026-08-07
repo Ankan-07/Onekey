@@ -1,11 +1,17 @@
-// middleware.ts — Next.js middleware entry point.
-// Runs on every non-asset request to refresh the Supabase session cookie.
-// No route protection here — auth gating is client-side in (dashboard)/layout.tsx.
-
-import { type NextRequest } from "next/server";
+import { type NextRequest, NextResponse } from "next/server";
 import { updateSession } from "@/lib/supabase/middleware";
 
 export async function middleware(request: NextRequest) {
+  const { pathname } = request.nextUrl;
+
+  // Programmatically skip static assets and files with extensions
+  if (
+    pathname.startsWith("/_next") ||
+    pathname.includes(".")
+  ) {
+    return NextResponse.next();
+  }
+
   return updateSession(request);
 }
 
@@ -16,8 +22,7 @@ export const config = {
      * - _next/static  (static files)
      * - _next/image   (image optimization)
      * - favicon.ico
-     * - image files (svg, png, jpg, jpeg, gif, webp)
      */
-    "/((?!_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)",
+    "/((?!_next/static|_next/image|favicon.ico).*)",
   ],
 };
