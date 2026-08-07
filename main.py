@@ -1443,7 +1443,9 @@ async def _stream_chat(
         "X-Onekey-Provider": handle.provider,
         "X-Onekey-Model": handle.model_entry,
         "X-Onekey-Key-Label": handle.key_label or "",
-        "Cache-Control": "no-cache",
+        "Cache-Control": "no-cache, no-transform",
+        "X-Accel-Buffering": "no",
+        "Connection": "keep-alive",
     }
     return StreamingResponse(byte_stream, media_type="text/event-stream", headers=headers)
 
